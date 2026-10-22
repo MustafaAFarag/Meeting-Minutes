@@ -21,7 +21,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Record until the call goes silent, STOP appears in the session dir, or Ctrl+C
+    /// Record until you press Ctrl+C, STOP appears in the session dir, or --max-seconds
     Record {
         /// Stop after this many seconds
         #[arg(long)]

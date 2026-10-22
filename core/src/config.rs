@@ -12,13 +12,16 @@ pub struct Config {
     pub notes_dir: PathBuf,
     pub whisper_cli: PathBuf,
     pub whisper_model: Option<PathBuf>,
-    /// Absolute level for a window to count as sound. "Them" (system audio) uses only this.
-    pub silence_threshold_db: f64,
-    /// "Me" (mic) only: a window is sound if it is at least this far above the mic's noise floor.
-    pub speech_margin_db: f64,
-    /// "Me" only: the noise-floor estimate is clamped to this, so speech can never become the floor.
-    pub max_noise_floor_db: f64,
-    pub silence_seconds: u64,
+    /// Keys of the removed silence auto-stop. Old config files may still set them: they are
+    /// accepted, ignored, and never printed. Any other unknown key is still an error.
+    #[serde(default, skip_serializing)]
+    pub silence_threshold_db: Option<toml::Value>,
+    #[serde(default, skip_serializing)]
+    pub speech_margin_db: Option<toml::Value>,
+    #[serde(default, skip_serializing)]
+    pub max_noise_floor_db: Option<toml::Value>,
+    #[serde(default, skip_serializing)]
+    pub silence_seconds: Option<toml::Value>,
     pub vocab_prompt: Option<String>,
     /// whisper `-l`: a language code, or "auto".
     pub language: String,
@@ -49,10 +52,10 @@ impl Default for Config {
             notes_dir: home_dir().join("MeetingNotes"),
             whisper_cli: PathBuf::from("whisper-cli"),
             whisper_model: None,
-            silence_threshold_db: -50.0,
-            speech_margin_db: 10.0,
-            max_noise_floor_db: -40.0,
-            silence_seconds: 120,
+            silence_threshold_db: None,
+            speech_margin_db: None,
+            max_noise_floor_db: None,
+            silence_seconds: None,
             vocab_prompt: None,
             language: "auto".to_string(),
             threads: thread::available_parallelism().map_or(4, |n| n.get()),
@@ -93,6 +96,10 @@ impl Config {
 
     pub fn parse(text: &str) -> Result<Config> {
         let mut cfg: Config = toml::from_str(text)?;
+        cfg.silence_threshold_db = None;
+        cfg.speech_margin_db = None;
+        cfg.max_noise_floor_db = None;
+        cfg.silence_seconds = None;
         cfg.notes_dir = expand_tilde(&cfg.notes_dir);
         cfg.whisper_cli = expand_tilde(&cfg.whisper_cli);
         cfg.whisper_model = cfg.whisper_model.map(|p| expand_tilde(&p));

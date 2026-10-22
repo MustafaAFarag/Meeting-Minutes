@@ -14,7 +14,6 @@ pub enum Status {
         elapsed: u64,
         me_db: f64,
         them_db: f64,
-        silent_for: u64,
     },
     Stopped {
         session: PathBuf,

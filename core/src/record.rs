@@ -11,7 +11,7 @@ use chrono::{DateTime, Local, SecondsFormat};
 
 use crate::capture::{CaptureProcess, Message, Track};
 use crate::config::Config;
-use crate::levels::{SilenceTracker, WindowMeter, FLOOR_DB, SAMPLE_RATE, WINDOWS_PER_SECOND};
+use crate::levels::{WindowMeter, FLOOR_DB, SAMPLE_RATE, WINDOWS_PER_SECOND};
 use crate::session::{SessionInfo, StopReason, TrackSeconds};
 use crate::status::Status;
 
@@ -106,12 +106,6 @@ pub fn record(cfg: &Config, opts: &RecordOptions, on_status: impl Fn(Status)) ->
         CaptureProcess::spawn(Track::Them, &them_argv, tx.clone())?,
     ];
 
-    let mut tracker = SilenceTracker::new(
-        cfg.silence_threshold_db,
-        cfg.speech_margin_db,
-        cfg.max_noise_floor_db,
-        cfg.silence_seconds,
-    );
     let mut ended = [false; 2];
     let mut second_peak = [FLOOR_DB; 2];
     let mut ticks = 0u64;
@@ -135,7 +129,6 @@ pub fn record(cfg: &Config, opts: &RecordOptions, on_status: impl Fn(Status)) ->
             recorders[0].meter.take_windows(),
             recorders[1].meter.take_windows(),
         ];
-        tracker.push(&windows[0], &windows[1]);
         for (second, track_windows) in second_peak.iter_mut().zip(&windows) {
             *second = track_windows.iter().copied().fold(*second, f64::max);
         }
@@ -144,7 +137,6 @@ pub fn record(cfg: &Config, opts: &RecordOptions, on_status: impl Fn(Status)) ->
                 elapsed: ticks / WINDOWS_PER_SECOND,
                 me_db: round1(second_peak[0]),
                 them_db: round1(second_peak[1]),
-                silent_for: tracker.silent_for(),
             });
             second_peak = [FLOOR_DB; 2];
         }
@@ -161,10 +153,7 @@ pub fn record(cfg: &Config, opts: &RecordOptions, on_status: impl Fn(Status)) ->
         {
             break StopReason::Max;
         } else if ended == [true; 2] {
-            // checked before silence: the recording broke, which is not the same as a call ending
             break StopReason::CaptureEnded;
-        } else if tracker.should_stop() {
-            break StopReason::Silence;
         }
     };
 
