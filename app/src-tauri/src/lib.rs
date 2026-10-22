@@ -312,28 +312,45 @@ fn toggle_window(app: &AppHandle) {
     }
 }
 
-/// Ctrl+Alt+M (Control+Option+M on macOS). The plugin is added here, not on the builder, because
-/// its own setup fails when there is no X11 connection (Wayland without XWayland), and a failed
-/// plugin setup would stop the whole app. A failure here is only logged.
-fn register_hotkey(app: &AppHandle) {
-    let shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyM);
+/// Ctrl+Alt+R: stops a recording, or starts one when nothing is running. While the notes are
+/// being written nothing happens, so a stray press cannot start a second run.
+fn toggle_recording(app: &AppHandle) {
+    let state = Arc::clone(&*app.state::<Arc<RunState>>());
+    if state.request_stop().is_ok() {
+        return;
+    }
+    if let Err(e) = launch(app, &state, Job::Record) {
+        eprintln!("record hotkey: {e}");
+    }
+}
+
+/// Ctrl+Alt+M (Control+Option+M on macOS) shows/hides the pill; Ctrl+Alt+R starts/stops a
+/// recording. The plugin is added here, not on the builder, because its own setup fails when
+/// there is no X11 connection (Wayland without XWayland), and a failed plugin setup would stop
+/// the whole app. A failure here is only logged.
+fn register_hotkeys(app: &AppHandle) {
+    let toggle = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyM);
+    let record = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyR);
     let plugin = tauri_plugin_global_shortcut::Builder::new()
         .with_handler(move |app, pressed, event| {
-            if *pressed == shortcut && event.state() == ShortcutState::Pressed {
+            if event.state() != ShortcutState::Pressed {
+                return;
+            }
+            if *pressed == toggle {
                 toggle_window(app);
+            } else if *pressed == record {
+                toggle_recording(app);
             }
         })
         .build();
-    let result = app
-        .plugin(plugin)
-        .map_err(|e| e.to_string())
-        .and_then(|()| {
-            app.global_shortcut()
-                .register(shortcut)
-                .map_err(|e| e.to_string())
-        });
-    if let Err(e) = result {
-        eprintln!("the show/hide hotkey is off: {e}");
+    if let Err(e) = app.plugin(plugin) {
+        eprintln!("the hotkeys are off: {e}");
+        return;
+    }
+    for (shortcut, name) in [(toggle, "Ctrl+Alt+M"), (record, "Ctrl+Alt+R")] {
+        if let Err(e) = app.global_shortcut().register(shortcut) {
+            eprintln!("the {name} hotkey is off: {e}");
+        }
     }
 }
 
@@ -430,7 +447,7 @@ pub fn run() {
             show_window(handle);
             first_run_autostart(handle);
             build_tray(handle)?;
-            register_hotkey(handle);
+            register_hotkeys(handle);
             Ok(())
         })
         .on_window_event(|window, event| match event {
