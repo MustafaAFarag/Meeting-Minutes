@@ -14,6 +14,9 @@ The pilot PM (Mac) uses it on 5 real meetings in 1 week. Each card is correct (r
 - [x] 2. Card prompt + schema, `mn summarize` (Claude → Codex fallback), `mn publish` (pending-marker queue), `mn process`, `mn run`. Tested end to end with real Claude, Codex and a real artifact
 - [x] 3. My Meetings artifact page: full-width master-detail layout, ctcHealth brand, ticks in db. The user confirmed ticks persist
 - [ ] 4. Tauri tray widget + 9:00 notification (Linux first)
+  - [x] auto-stop removed; plain widget (Start/levels/Stop/spinner/Done) — user confirmed it works
+  - [x] notch pill at top edge, hover unfold, drag + remembered position, Ctrl+Alt+M show/hide, Ctrl+Alt+R record toggle, start at login (tray toggle). Folded look checked by screenshot; unfold/drag/hotkeys need the user's check
+  - [ ] 9:00 notification
 - [ ] 5. Mac capture sidecar (Swift) + GitHub Actions release (.dmg, AppImage)
 - [ ] 6. Repo CLAUDE.md + `setup` skill for beginner PMs
 - [ ] 7. Install on pilot Mac, run the pilot week
