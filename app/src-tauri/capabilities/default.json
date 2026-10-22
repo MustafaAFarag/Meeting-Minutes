@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Lets the widget window listen to status events and drag itself along the top edge.",
+  "description": "Lets the widget window listen to status and edge events. Dragging goes through the app's own start_drag command.",
   "windows": ["main"],
-  "permissions": ["core:default", "core:window:allow-start-dragging"]
+  "permissions": ["core:default"]
 }

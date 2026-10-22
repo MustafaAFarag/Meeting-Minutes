@@ -2,7 +2,6 @@
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
-const { getCurrentWindow } = window.__TAURI__.window;
 
 const DONE_RESET_MS = 10000;
 const HOVER_OPEN_MS = 150;
@@ -13,23 +12,46 @@ const DRAG_PX = 4;
 const NOTICE_MS = 6000;
 const DETAIL_CHARS = 120;
 const MIN_DB = -60;
+const SELFTEST_STEP_MS = 2000;
+const SELFTEST_CYCLES = 3;
 
 const $ = (id) => document.getElementById(id);
 const app = $("app");
+const statusEl = $("status");
+
+const TITLE_OPEN_MEETINGS = "Open My Meetings";
 
 let doneTimer = null;
 let noticeTimer = null;
 // After Stop is clicked, late "recording" events must not flip the view back.
 let stopping = false;
+let statusDetail = "";
+
+const STATUS_TITLE = {
+  idle: () => "Ready",
+  recording: () => "Recording",
+  working: () => statusDetail,
+  done: () => "Your notes are ready",
+  error: () => statusDetail,
+};
+
+function updateButtons(name) {
+  const canStart = name === "idle" || name === "done" || name === "error";
+  $("start").disabled = !canStart;
+  $("stop").disabled = name !== "recording";
+  $("retry").hidden = name !== "error";
+}
 
 function setView(name) {
   app.dataset.view = name;
+  statusEl.title = STATUS_TITLE[name]();
+  updateButtons(name);
   clearTimeout(doneTimer);
   if (name === "done") doneTimer = setTimeout(() => setView("idle"), DONE_RESET_MS);
   if (name === "done" || name === "error") autoOpen();
 }
 
-// Fold / unfold. The window is resized by the backend, which keeps its top-centre point.
+// Fold / unfold. The window is resized by the backend, which keeps its edge and vertical centre.
 let unfolded = false;
 let pinned = false;
 let hovering = false;
@@ -103,49 +125,61 @@ function levelPercent(db) {
   return Math.round(Math.min(1, Math.max(0, (db - MIN_DB) / -MIN_DB)) * 100);
 }
 
-function setWorking(text, short) {
-  $("working-text").textContent = text;
-  $("working-mini").textContent = short;
+function clip(text) {
+  return text.length > DETAIL_CHARS ? text.slice(0, DETAIL_CHARS).trimEnd() + "…" : text;
+}
+
+function setWorking(text) {
+  statusDetail = text;
   setView("working");
 }
 
 function showError(message) {
   const text = String(message || "");
   console.error(text);
-  $("error-detail").textContent =
-    text.length > DETAIL_CHARS ? text.slice(0, DETAIL_CHARS).trimEnd() + "…" : text;
+  statusDetail = clip(text) || "Something went wrong";
   stopping = false;
   setView("error");
 }
 
+// "Open My Meetings" could not find a link: say so in its tooltip and ring it for a moment.
 function showNotice(message) {
   const text = String(message || "");
   console.error(text);
-  const el = $("notice");
-  el.textContent = text.length > DETAIL_CHARS ? text.slice(0, DETAIL_CHARS).trimEnd() + "…" : text;
-  el.hidden = false;
+  const btn = $("open-meetings");
+  btn.title = clip(text);
+  btn.classList.add("alert");
   clearTimeout(noticeTimer);
-  noticeTimer = setTimeout(() => { el.hidden = true; }, NOTICE_MS);
+  noticeTimer = setTimeout(() => {
+    btn.title = TITLE_OPEN_MEETINGS;
+    btn.classList.remove("alert");
+  }, NOTICE_MS);
+}
+
+function resetMeters() {
+  $("timer").textContent = "00:00";
+  $("bar-me").style.height = "0%";
+  $("bar-them").style.height = "0%";
 }
 
 function onStatus(status) {
   switch (status.state) {
     case "recording":
       if (stopping) return;
-      $("timer").textContent = $("timer-mini").textContent = formatTimer(status.elapsed);
-      $("bar-me").style.width = levelPercent(status.me_db) + "%";
-      $("bar-them").style.width = levelPercent(status.them_db) + "%";
-      setView("recording");
+      $("timer").textContent = formatTimer(status.elapsed);
+      $("bar-me").style.height = levelPercent(status.me_db) + "%";
+      $("bar-them").style.height = levelPercent(status.them_db) + "%";
+      if (app.dataset.view !== "recording") setView("recording");
       break;
     case "stopped":
     case "transcribing":
-      setWorking("Transcribing…", "Transcribing…");
+      setWorking("Transcribing…");
       break;
     case "summarizing":
-      setWorking("Writing your notes…", "Writing…");
+      setWorking("Writing your notes…");
       break;
     case "publishing":
-      setWorking("Updating My Meetings…", "Updating…");
+      setWorking("Updating My Meetings…");
       break;
     case "published":
       stopping = false;
@@ -168,45 +202,32 @@ async function run(command, onFail) {
   }
 }
 
-function openMeetings() {
-  run("open_meetings", showNotice);
-}
-
 $("start").addEventListener("click", () => {
   stopping = false;
-  $("timer").textContent = $("timer-mini").textContent = "00:00";
-  $("bar-me").style.width = "0%";
-  $("bar-them").style.width = "0%";
+  resetMeters();
+  // No second click until the first status event (or an error) has set the buttons again.
+  $("start").disabled = true;
   run("start", showError);
 });
 
 $("stop").addEventListener("click", () => {
   stopping = true;
   $("stop").blur();
-  setWorking("Transcribing…", "Transcribing…");
+  setWorking("Transcribing…");
   // "Not recording" means it already stopped on its own; the status events carry on.
   run("stop", console.error);
 });
 
 $("retry").addEventListener("click", () => {
   stopping = false;
-  setWorking("Transcribing…", "Transcribing…");
+  setWorking("Transcribing…");
   run("retry", showError);
 });
 
-$("dismiss").addEventListener("click", () => setView("idle"));
+$("open-meetings").addEventListener("click", () => run("open_meetings", showNotice));
 
-$("done-open").addEventListener("click", () => {
-  openMeetings();
-  setView("idle");
-});
-
-$("open-meetings").addEventListener("click", (event) => {
-  event.preventDefault();
-  openMeetings();
-});
-
-// Hover unfolds, a click pins it open, a press-and-move drags the pill along the top edge.
+// Hover unfolds, a click on the empty area pins it open, a press-and-move drags the tab along
+// the edge (and drops it on the nearest side edge).
 app.addEventListener("mouseenter", pointerEnter);
 app.addEventListener("mouseleave", () => {
   press = null;
@@ -214,7 +235,7 @@ app.addEventListener("mouseleave", () => {
 });
 
 app.addEventListener("mousedown", (event) => {
-  if (event.button !== 0 || event.target.closest("button, a, .error-detail")) return;
+  if (event.button !== 0 || event.target.closest("button")) return;
   press = { x: event.clientX, y: event.clientY };
 });
 
@@ -230,7 +251,7 @@ window.addEventListener("mousemove", (event) => {
   dragging = true;
   clearTimeout(openTimer);
   clearTimeout(closeTimer);
-  getCurrentWindow().startDragging().catch((err) => {
+  invoke("start_drag").catch((err) => {
     dragging = false;
     console.error(err);
   });
@@ -242,4 +263,26 @@ window.addEventListener("mouseup", () => {
   dragging = false;
 });
 
+function setEdge(edge) {
+  app.dataset.edge = edge === "left" ? "left" : "right";
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// MN_NOTCH_SELFTEST=1: unfold and fold on a timer, so the fold path can be checked without a
+// mouse. The backend prints the window's size, position and visibility after each resize.
+async function selftest() {
+  if (!(await invoke("selftest_enabled").catch(() => false))) return;
+  for (let i = 0; i < SELFTEST_CYCLES; i++) {
+    await sleep(SELFTEST_STEP_MS);
+    setUnfolded(true);
+    await sleep(SELFTEST_STEP_MS);
+    setUnfolded(false);
+  }
+}
+
 listen("mn-status", (event) => onStatus(event.payload));
+listen("mn-edge", (event) => setEdge(event.payload));
+invoke("current_edge").then(setEdge).catch(console.error);
+setView("idle");
+selftest();

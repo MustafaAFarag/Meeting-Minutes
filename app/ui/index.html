@@ -22,61 +22,48 @@
     </symbol>
   </svg>
 
-  <!-- #app is the pill. data-view is what the app is doing; data-fold is folded ("closed") or unfolded ("open"). -->
-  <main id="app" data-view="idle" data-fold="closed" data-pinned="false">
+  <!-- #app is the tab. data-view is what the app is doing; data-fold is folded ("closed") or
+       unfolded ("open"); data-edge is the screen edge it hangs from. -->
+  <main id="app" data-view="idle" data-fold="closed" data-edge="right" data-pinned="false">
 
-    <div class="mini">
-      <div class="chip" data-view="idle"><span class="dot cyan"></span><span>Notes</span></div>
-      <div class="chip" data-view="recording"><span class="dot rec"></span><span id="timer-mini" class="mono">00:00</span></div>
-      <div class="chip" data-view="working">
-        <svg class="spinner" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><use href="#starburst"/></svg>
-        <span id="working-mini">Transcribing…</span>
-      </div>
-      <div class="chip" data-view="done"><span>Done ✓</span></div>
-      <div class="chip" data-view="error"><span class="dot err"></span><span>Error</span></div>
+    <!-- Folded: one status mark. -->
+    <div class="mini" aria-hidden="true">
+      <span class="mark dot cyan" data-view="idle"></span>
+      <span class="mark dot rec" data-view="recording"></span>
+      <svg class="mark spinner" data-view="working" viewBox="0 0 24 24" width="10" height="10"><use href="#starburst"/></svg>
+      <span class="mark dot ok" data-view="done"></span>
+      <span class="mark bang" data-view="error">!</span>
     </div>
 
+    <!-- Unfolded: status, then the buttons. -->
     <div class="full">
-      <section class="view" data-view="idle">
-        <button id="start" class="btn big" type="button">Start recording</button>
-      </section>
-
-      <section class="view" data-view="recording">
-        <div class="row top">
-          <span class="rec-dot" aria-hidden="true"></span>
+      <div id="status" class="status" title="Ready">
+        <span class="item dot cyan" data-view="idle"></span>
+        <div class="item rec" data-view="recording">
           <span id="timer" class="timer">00:00</span>
+          <span class="levels">
+            <span class="bar" title="You"><i id="bar-me"></i></span>
+            <span class="bar" title="Them"><i id="bar-them"></i></span>
+          </span>
         </div>
-        <div class="meters">
-          <div class="meter"><span class="label">You</span><span class="bar"><i id="bar-me"></i></span></div>
-          <div class="meter"><span class="label">Them</span><span class="bar"><i id="bar-them"></i></span></div>
-        </div>
-        <button id="stop" class="btn big" type="button">Stop</button>
-      </section>
+        <svg class="item spinner" data-view="working" viewBox="0 0 24 24" width="20" height="20"><use href="#starburst"/></svg>
+        <span class="item check" data-view="done">✓</span>
+        <span class="item bang" data-view="error">!</span>
+      </div>
 
-      <section class="view" data-view="working">
-        <div class="row working">
-          <svg class="spinner" viewBox="0 0 24 24" width="30" height="30" aria-hidden="true"><use href="#starburst"/></svg>
-          <span id="working-text" class="working-text">Transcribing…</span>
-        </div>
-      </section>
-
-      <section class="view" data-view="done">
-        <p class="done-text">Done ✓</p>
-        <button id="done-open" class="btn big" type="button">Open My Meetings</button>
-      </section>
-
-      <section class="view" data-view="error">
-        <p class="error-title">Something went wrong</p>
-        <p id="error-detail" class="error-detail"></p>
-        <div class="row buttons">
-          <button id="retry" class="btn" type="button">Try again</button>
-          <button id="dismiss" class="btn ghost" type="button">Dismiss</button>
-        </div>
-      </section>
-
-      <a id="open-meetings" class="link" href="#" role="button">Open My Meetings</a>
+      <button id="start" class="icon-btn round" type="button" title="Start recording (Ctrl+Alt+R)" aria-label="Start recording">
+        <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M8 5.5v13l11-6.5z" fill="currentColor"/></svg>
+      </button>
+      <button id="stop" class="icon-btn round" type="button" title="Stop recording (Ctrl+Alt+R)" aria-label="Stop recording" disabled>
+        <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5" fill="currentColor"/></svg>
+      </button>
+      <button id="retry" class="icon-btn small" type="button" title="Try again" aria-label="Try again" hidden>
+        <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M19 12a7 7 0 1 1-2.2-5.1M19 4.5v4.4h-4.4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button id="open-meetings" class="icon-btn small" type="button" title="Open My Meetings" aria-label="Open My Meetings">
+        <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M5 7h14M5 12h14M5 17h9" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+      </button>
     </div>
-    <p id="notice" class="notice" role="status" hidden></p>
   </main>
   <script src="app.js"></script>
 </body>

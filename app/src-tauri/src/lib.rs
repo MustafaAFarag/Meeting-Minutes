@@ -4,10 +4,10 @@ mod runner;
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use mn_core::record::RecordOptions;
 use mn_core::{Config, Status};
@@ -20,14 +20,20 @@ use tauri_plugin_autostart::{MacosLauncher, ManagerExt as _};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use tauri_plugin_opener::OpenerExt;
 
-use notch::{Rect, WidgetPrefs};
+use notch::{Anchor, Edge, Rect, WidgetPrefs};
 use runner::RunState;
 
 /// The event the UI listens to. The payload is the core's `Status` as JSON.
 const STATUS_EVENT: &str = "mn-status";
+/// Tells the UI which edge the tab hangs from ("left" or "right") after a drop.
+const EDGE_EVENT: &str = "mn-edge";
 const WINDOW_LABEL: &str = "main";
 /// After the window stops moving for this long, a drag counts as finished.
 const DRAG_SETTLE: Duration = Duration::from_millis(250);
+/// `Moved` events this soon after we moved the window ourselves are not a drag.
+const OWN_MOVE_QUIET: Duration = Duration::from_millis(300);
+/// How long a resize gets before we check the window really is where it belongs.
+const RESIZE_SETTLE: Duration = Duration::from_millis(150);
 
 type Shared<'a> = State<'a, Arc<RunState>>;
 
@@ -122,20 +128,23 @@ fn open_meetings(app: AppHandle) -> Result<(), String> {
         .map_err(|e| format!("Could not open the browser: {e}"))
 }
 
-/// Where the pill hangs: the horizontal centre it keeps while resizing, and the top edge of the
-/// monitor it is on (physical pixels).
-#[derive(Clone, Copy)]
-struct Anchor {
-    center_x: i32,
-    top_y: i32,
-}
-
 struct NotchState {
     prefs: Mutex<WidgetPrefs>,
     prefs_path: Option<PathBuf>,
     anchor: Mutex<Option<Anchor>>,
+    /// Whether the window is the folded tab (true) or the unfolded column. Kept here so the
+    /// placement maths never depends on reading a size back from a window that is still resizing.
+    folded: AtomicBool,
+    /// A drag was started and has not been dropped yet.
+    dragging: AtomicBool,
+    /// The user hid the window (hotkey, tray, close). A resize must not bring it back then.
+    user_hidden: AtomicBool,
+    /// Moves we made ourselves are not drags: `Moved` events before this moment are ignored.
+    own_move_until: Mutex<Option<Instant>>,
     /// Counts window moves, so only the last one of a drag is acted on.
     moves: AtomicU64,
+    /// Counts resizes, so only the last one is double-checked.
+    resizes: AtomicU64,
 }
 
 impl NotchState {
@@ -149,7 +158,12 @@ impl NotchState {
             prefs: Mutex::new(prefs),
             prefs_path,
             anchor: Mutex::new(None),
+            folded: AtomicBool::new(true),
+            dragging: AtomicBool::new(false),
+            user_hidden: AtomicBool::new(false),
+            own_move_until: Mutex::new(None),
             moves: AtomicU64::new(0),
+            resizes: AtomicU64::new(0),
         }
     }
 
@@ -178,6 +192,26 @@ impl NotchState {
         if let Ok(mut a) = self.anchor.lock() {
             *a = Some(anchor);
         }
+    }
+
+    fn mark_own_move(&self) {
+        if let Ok(mut until) = self.own_move_until.lock() {
+            *until = Some(Instant::now() + OWN_MOVE_QUIET);
+        }
+    }
+
+    fn clear_own_move(&self) {
+        if let Ok(mut until) = self.own_move_until.lock() {
+            *until = None;
+        }
+    }
+
+    fn is_own_move(&self) -> bool {
+        self.own_move_until
+            .lock()
+            .ok()
+            .and_then(|until| *until)
+            .is_some_and(|until| Instant::now() < until)
     }
 }
 
@@ -208,30 +242,125 @@ fn monitors(window: &Window) -> Option<(Vec<Rect>, Rect)> {
     Some((rects, primary))
 }
 
-fn physical_width(window: &Window, logical: f64) -> i32 {
+/// Physical size of the window in its current (folded or unfolded) state.
+fn physical_size(window: &Window, folded: bool) -> (i32, i32) {
     let scale = window.scale_factor().unwrap_or(1.0);
-    (logical * scale).round() as i32
+    let (w, h) = notch::size_for(folded);
+    ((w * scale).round() as i32, (h * scale).round() as i32)
 }
 
-/// Moves the window so its centre is at the anchor, hanging from the top edge.
-fn place(window: &Window, anchor: Anchor, logical_width: f64) {
-    let x = notch::anchored_x(anchor.center_x, physical_width(window, logical_width));
-    if let Err(e) = window.set_position(PhysicalPosition::new(x, anchor.top_y)) {
+/// Where the window's top-left corner belongs for the current anchor and fold state.
+fn target_position(window: &Window, state: &NotchState) -> Option<(i32, i32)> {
+    let anchor = state.anchor()?;
+    let (w, h) = physical_size(window, state.folded.load(Ordering::SeqCst));
+    Some(anchor.window_pos(w, h))
+}
+
+/// Moves the window to its anchored spot, hanging from the edge.
+fn place(window: &Window, state: &NotchState) {
+    let Some((x, y)) = target_position(window, state) else {
+        return;
+    };
+    state.mark_own_move();
+    if let Err(e) = window.set_position(PhysicalPosition::new(x, y)) {
         eprintln!("could not position the window: {e}");
     }
 }
 
-/// Resizes between the folded and unfolded pill, keeping the same top-centre point.
+fn selftest_on() -> bool {
+    std::env::var("MN_NOTCH_SELFTEST").is_ok_and(|v| v == "1")
+}
+
+/// Self-test only: what the window really reports. `label` is "" right after a resize and
+/// "settled " once the window had time to take it.
+fn report(window: &Window, label: &str) {
+    if !selftest_on() {
+        return;
+    }
+    let size = window
+        .outer_size()
+        .map(|s| format!("{}x{}", s.width, s.height))
+        .unwrap_or_else(|_| "?".into());
+    let pos = window
+        .outer_position()
+        .map(|p| format!("{},{}", p.x, p.y))
+        .unwrap_or_else(|_| "?".into());
+    let visible = window.is_visible().unwrap_or(false);
+    eprintln!("NOTCH {label}size={size} pos={pos} visible={visible}");
+}
+
+/// Resizing is asynchronous on GTK, so look again shortly after: if the window is not where it
+/// belongs, move it there, and if it is hidden without the user asking for that, show it.
+fn ensure_placed(window: &Window) {
+    let state = window.state::<NotchState>();
+    if state.dragging.load(Ordering::SeqCst) {
+        return;
+    }
+    if let (Some(want), Ok(have)) = (target_position(window, &state), window.outer_position()) {
+        if (have.x, have.y) != want {
+            place(window, &state);
+        }
+    }
+    if !state.user_hidden.load(Ordering::SeqCst) && !window.is_visible().unwrap_or(true) {
+        let _ = window.show();
+    }
+    report(window, "settled ");
+}
+
+/// Resizes between the folded tab and the unfolded column, keeping the same edge and the same
+/// vertical centre.
 #[tauri::command]
 fn set_size(window: Window, state: State<'_, NotchState>, folded: bool) -> Result<(), String> {
     let (width, height) = notch::size_for(folded);
+    state.folded.store(folded, Ordering::SeqCst);
     window
         .set_size(LogicalSize::new(width, height))
         .map_err(|e| format!("Could not resize the window: {e}"))?;
-    if let Some(anchor) = state.anchor() {
-        place(&window, anchor, width);
+    if !state.dragging.load(Ordering::SeqCst) {
+        place(&window, &state);
     }
+    if !state.user_hidden.load(Ordering::SeqCst) && !window.is_visible().unwrap_or(true) {
+        let _ = window.show();
+    }
+    report(&window, "");
+    let seq = state.resizes.fetch_add(1, Ordering::SeqCst) + 1;
+    let window = window.clone();
+    thread::spawn(move || {
+        thread::sleep(RESIZE_SETTLE);
+        if window.state::<NotchState>().resizes.load(Ordering::SeqCst) == seq {
+            ensure_placed(&window);
+        }
+    });
     Ok(())
+}
+
+/// The edge the tab hangs from, so the UI can round the corners that face the screen.
+#[tauri::command]
+fn current_edge(state: State<'_, NotchState>) -> &'static str {
+    state.anchor().map_or(Edge::Right, |a| a.edge).as_str()
+}
+
+/// Whether the UI should run its fold/unfold self-test (`MN_NOTCH_SELFTEST=1`).
+#[tauri::command]
+fn selftest_enabled() -> bool {
+    selftest_on()
+}
+
+/// Starts a drag. The drop is noticed when the window stops moving (see `on_moved`).
+#[tauri::command]
+fn start_drag(window: Window, state: State<'_, NotchState>) -> Result<(), String> {
+    state.dragging.store(true, Ordering::SeqCst);
+    state.clear_own_move();
+    window
+        .start_dragging()
+        .inspect_err(|_| state.dragging.store(false, Ordering::SeqCst))
+        .map_err(|e| format!("Could not start the drag: {e}"))
+}
+
+fn emit_edge(window: &Window, edge: Edge) {
+    if let Err(e) = window.emit(EDGE_EVENT, edge.as_str()) {
+        eprintln!("could not send the edge to the window: {e}");
+    }
 }
 
 /// Puts the window at the saved (or default) spot. Runs once, before the window is shown.
@@ -240,23 +369,18 @@ fn init_position(window: &Window, state: &NotchState) {
         eprintln!("no monitor information; leaving the window where the system put it");
         return;
     };
-    let saved = state.prefs.lock().ok().and_then(|p| p.center_x);
-    let center_x = notch::resolve_center(saved, &rects, primary);
-    let anchor = Anchor {
-        center_x,
-        top_y: notch::top_y_for(center_x, &rects, primary),
-    };
-    state.set_anchor(anchor);
-    place(window, anchor, notch::FOLDED_SIZE.0);
+    let saved = state.prefs.lock().ok().and_then(|p| p.pos);
+    state.set_anchor(notch::resolve(saved, &rects, primary));
+    place(window, state);
 }
 
-/// A drag ends when the window has stopped moving for `DRAG_SETTLE`.
+/// Our own moves (placing, snapping) are not drags and are ignored.
 fn on_moved(window: &Window) {
-    let seq = window
-        .state::<NotchState>()
-        .moves
-        .fetch_add(1, Ordering::SeqCst)
-        + 1;
+    let state = window.state::<NotchState>();
+    if state.is_own_move() || !state.dragging.load(Ordering::SeqCst) {
+        return;
+    }
+    let seq = state.moves.fetch_add(1, Ordering::SeqCst) + 1;
     let window = window.clone();
     thread::spawn(move || {
         thread::sleep(DRAG_SETTLE);
@@ -266,28 +390,32 @@ fn on_moved(window: &Window) {
     });
 }
 
-/// Snaps the pill back to the top edge, keeps its x, and remembers the new centre.
+/// The drop: snaps the tab to the nearest side edge of the monitor it was dropped on, and
+/// remembers the spot.
 fn settle(window: &Window) {
-    let (Ok(pos), Ok(size)) = (window.outer_position(), window.outer_size()) else {
+    let state = window.state::<NotchState>();
+    let Ok(pos) = window.outer_position() else {
         return;
     };
     let Some((rects, primary)) = monitors(window) else {
         return;
     };
-    let center_x = notch::center_from_x(pos.x, i32::try_from(size.width).unwrap_or(0));
-    let top_y = notch::top_y_for(center_x, &rects, primary);
-    let state = window.state::<NotchState>();
-    state.set_anchor(Anchor { center_x, top_y });
-    if pos.y != top_y {
-        if let Err(e) = window.set_position(PhysicalPosition::new(pos.x, top_y)) {
-            eprintln!("could not snap the window to the top edge: {e}");
-        }
-    }
-    state.update_prefs(|p| p.center_x = Some(center_x));
+    let (w, h) = physical_size(window, state.folded.load(Ordering::SeqCst));
+    let drop_x = pos.x + w / 2;
+    let anchor = notch::drop_anchor(drop_x, pos.y + h / 2, &rects, primary);
+    state.set_anchor(anchor);
+    state.dragging.store(false, Ordering::SeqCst);
+    place(window, &state);
+    emit_edge(window, anchor.edge);
+    let saved = anchor.saved(drop_x);
+    state.update_prefs(|p| p.pos = Some(saved));
 }
 
 fn show_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
+        app.state::<NotchState>()
+            .user_hidden
+            .store(false, Ordering::SeqCst);
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
@@ -296,6 +424,9 @@ fn show_window(app: &AppHandle) {
 
 fn hide_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
+        app.state::<NotchState>()
+            .user_hidden
+            .store(true, Ordering::SeqCst);
         let _ = window.hide();
     }
 }
@@ -324,7 +455,7 @@ fn toggle_recording(app: &AppHandle) {
     }
 }
 
-/// Ctrl+Alt+M (Control+Option+M on macOS) shows/hides the pill; Ctrl+Alt+R starts/stops a
+/// Ctrl+Alt+M (Control+Option+M on macOS) shows/hides the tab; Ctrl+Alt+R starts/stops a
 /// recording. The plugin is added here, not on the builder, because its own setup fails when
 /// there is no X11 connection (Wayland without XWayland), and a failed plugin setup would stop
 /// the whole app. A failure here is only logged.
@@ -436,7 +567,10 @@ pub fn run() {
             stop,
             retry,
             open_meetings,
-            set_size
+            set_size,
+            current_edge,
+            selftest_enabled,
+            start_drag
         ])
         .setup(|app| {
             let handle = app.handle();
@@ -454,7 +588,7 @@ pub fn run() {
             // Closing hides to the tray; "Quit" in the tray menu is the only way out.
             WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
-                let _ = window.hide();
+                hide_window(window.app_handle());
             }
             WindowEvent::Moved(_) => on_moved(window),
             _ => {}
