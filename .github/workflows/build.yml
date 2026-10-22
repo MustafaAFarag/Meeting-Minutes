@@ -125,20 +125,35 @@ jobs:
           case " $archs " in *" arm64 "*) ;; *) echo "Missing arm64 slice"; exit 1 ;; esac
           case " $archs " in *" x86_64 "*) ;; *) echo "Missing x86_64 slice"; exit 1 ;; esac
 
-          dependencies="$(otool -L ../whisper-cli-cache/whisper-cli | tail -n +2 | awk '{print $1}')"
-          printf '%s\n' "$dependencies"
-          unexpected="$(printf '%s\n' "$dependencies" | grep -Ev '^(/usr/lib/|/System/)' || true)"
-          if [ -n "$unexpected" ]; then
-            echo "Unexpected non-system dynamic libraries:" >&2
-            echo "$unexpected" >&2
-            exit 1
-          fi
+          # One arch at a time: on a universal binary `otool -L` prints a header line (the
+          # binary's own path) per arch, and only the first one would be skipped.
+          for arch in arm64 x86_64; do
+            dependencies="$(otool -L -arch "$arch" ../whisper-cli-cache/whisper-cli | tail -n +2 | awk '{print $1}')"
+            echo "[$arch]"; printf '%s\n' "$dependencies"
+            unexpected="$(printf '%s\n' "$dependencies" | grep -Ev '^(/usr/lib/|/System/)' || true)"
+            if [ -n "$unexpected" ]; then
+              echo "::error::whisper-cli ($arch) links non-system libraries: $unexpected"
+              exit 1
+            fi
+          done
 
           curl -fL --retry 3 --retry-delay 3 \
             -o models/ggml-tiny.en.bin \
             https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin
-          ../whisper-cli-cache/whisper-cli -m models/ggml-tiny.en.bin -f samples/jfk.wav -nt > /tmp/whisper-cli-macos-transcript.txt 2>&1
-          grep -qi "ask not" /tmp/whisper-cli-macos-transcript.txt
+          out=/tmp/whisper-cli-macos-transcript.txt
+          # GitHub's Mac VMs may have no usable Metal GPU. Then check the CPU path (-ng)
+          # instead of failing the release; real Macs have the GPU.
+          if ../whisper-cli-cache/whisper-cli -m models/ggml-tiny.en.bin -f samples/jfk.wav -nt >"$out" 2>&1 &&
+            grep -qi "ask not" "$out"; then
+            echo "Transcription OK (default backend)"
+          else
+            tail -n 30 "$out"
+            echo "::warning::whisper-cli failed with the default (Metal) backend on the runner; retrying on CPU"
+            ../whisper-cli-cache/whisper-cli -ng -m models/ggml-tiny.en.bin -f samples/jfk.wav -nt >"$out" 2>&1 || { tail -n 30 "$out"; exit 1; }
+            grep -qi "ask not" "$out" || { tail -n 30 "$out"; echo "::error::transcript has no 'ask not'"; exit 1; }
+            echo "Transcription OK (CPU)"
+          fi
+          grep -i "ask not" "$out"
 
       # Makes icon.icns (and the rest of the set) from the 1024x1024 source.
       - name: Generate icons
