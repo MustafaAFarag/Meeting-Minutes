@@ -9,7 +9,7 @@ use mn_core::session::{SessionInfo, StopReason};
 use mn_core::{record, Config, RecordOptions, Status};
 
 /// 0.5 s of digital silence, then 1 s of non-zero PCM (every byte 0x40), then stay alive without
-/// output. The silence first gives the adaptive noise floor something to compare the sound to.
+/// output.
 const LOUD_THEN_IDLE: &str =
     "head -c 16000 /dev/zero; head -c 32000 /dev/zero | tr '\\0' '@'; exec sleep 30";
 /// 1 s of digital silence, then stay alive without output.
@@ -25,8 +25,6 @@ fn config(notes: &Path, me: &str, them: &str) -> Config {
         notes_dir: notes.to_path_buf(),
         capture_me: Some(sh(me)),
         capture_them: Some(sh(them)),
-        silence_seconds: 1,
-        silence_threshold_db: -50.0,
         ..Config::default()
     }
 }
@@ -61,12 +59,16 @@ fn pid_is_gone(pid_file: &Path) -> bool {
 }
 
 #[test]
-fn stops_on_silence_after_speech_and_writes_session_files() {
+fn writes_session_files_and_stops_at_max_seconds() {
     let notes = tempfile::tempdir().unwrap();
     let cfg = config(notes.path(), LOUD_THEN_IDLE, SILENT_THEN_IDLE);
+    let opts = RecordOptions {
+        max_seconds: Some(2),
+        ..RecordOptions::default()
+    };
     let started = Instant::now();
 
-    let (result, statuses) = run(&cfg, &RecordOptions::default());
+    let (result, statuses) = run(&cfg, &opts);
     let session = result.unwrap();
 
     assert!(
@@ -90,7 +92,7 @@ fn stops_on_silence_after_speech_and_writes_session_files() {
     assert!(them.iter().all(|&s| s == 0));
 
     let info = SessionInfo::load(&session).unwrap().unwrap();
-    assert_eq!(info.stop_reason, StopReason::Silence);
+    assert_eq!(info.stop_reason, StopReason::Max);
     assert_eq!((info.seconds.me, info.seconds.them), (1.5, 1.0));
     assert!(!info.audio_deleted);
     let started_at = chrono::DateTime::parse_from_rfc3339(&info.started_at).unwrap();
@@ -98,7 +100,7 @@ fn stops_on_silence_after_speech_and_writes_session_files() {
     assert!(ended_at >= started_at);
     let raw: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(session.join("session.json")).unwrap()).unwrap();
-    assert_eq!(raw["stop_reason"], "silence");
+    assert_eq!(raw["stop_reason"], "max");
 
     assert!(statuses
         .iter()
@@ -107,13 +109,13 @@ fn stops_on_silence_after_speech_and_writes_session_files() {
         statuses.last(),
         Some(&Status::Stopped {
             session,
-            reason: StopReason::Silence
+            reason: StopReason::Max
         })
     );
 }
 
 #[test]
-fn quiet_call_never_auto_stops_before_first_speech_and_children_are_killed() {
+fn capture_processes_are_killed_when_recording_stops() {
     let notes = tempfile::tempdir().unwrap();
     let pid_file = notes.path().join("me.pid");
     let me = format!("echo $$ > '{}'; {IDLE}", pid_file.display());
@@ -129,14 +131,9 @@ fn quiet_call_never_auto_stops_before_first_speech_and_children_are_killed() {
     let info = SessionInfo::load(&session).unwrap().unwrap();
     assert_eq!(info.stop_reason, StopReason::Max);
     assert!(info.seconds.me < 0.1 && info.seconds.them < 0.1);
-    assert!(statuses.iter().any(|s| matches!(
-        s,
-        Status::Recording {
-            elapsed: 1,
-            silent_for: 0,
-            ..
-        }
-    )));
+    assert!(statuses
+        .iter()
+        .any(|s| matches!(s, Status::Recording { elapsed: 1, .. })));
     assert!(pid_is_gone(&pid_file), "capture process must be killed");
 }
 
@@ -179,6 +176,82 @@ fn interrupt_flag_stops_with_signal_reason() {
     assert_eq!(info.stop_reason, StopReason::Signal);
 }
 
+/// Runs a recording whose mic speaks for 1 s and then goes silent while the captures stay alive.
+/// `stop` runs on another thread 3.5 s after the session dir appears.
+fn run_silent_call_until(
+    stop: impl FnOnce(&Path, &RecordOptions) + Send + 'static,
+) -> (SessionInfo, Vec<Status>) {
+    let notes = tempfile::tempdir().unwrap();
+    let cfg = config(notes.path(), LOUD_THEN_IDLE, SILENT_THEN_IDLE);
+    let opts = RecordOptions::default();
+    let thread_opts = opts.clone();
+    let notes_path = notes.path().to_path_buf();
+    let stopper = std::thread::spawn(move || loop {
+        if let Some(dir) = only_session_dir(&notes_path) {
+            // well past the 1 s of silence the old auto-stop needed
+            std::thread::sleep(Duration::from_millis(3500));
+            stop(&dir, &thread_opts);
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    });
+
+    let (result, statuses) = run(&cfg, &opts);
+    stopper.join().unwrap();
+    (
+        SessionInfo::load(&result.unwrap()).unwrap().unwrap(),
+        statuses,
+    )
+}
+
+#[test]
+fn silent_input_does_not_stop_the_recording_by_itself_stop_file() {
+    let (info, statuses) = run_silent_call_until(|dir, _| fs::write(dir.join("STOP"), "").unwrap());
+
+    assert_eq!(info.stop_reason, StopReason::User);
+    assert!(statuses
+        .iter()
+        .any(|s| matches!(s, Status::Recording { elapsed: 3, .. })));
+}
+
+#[test]
+fn silent_input_does_not_stop_the_recording_by_itself_interrupt() {
+    let (info, statuses) =
+        run_silent_call_until(|_, opts| opts.interrupt.store(true, Ordering::SeqCst));
+
+    assert_eq!(info.stop_reason, StopReason::Signal);
+    assert!(statuses
+        .iter()
+        .any(|s| matches!(s, Status::Recording { elapsed: 3, .. })));
+}
+
+#[test]
+fn recording_status_json_has_only_the_level_fields() {
+    let notes = tempfile::tempdir().unwrap();
+    let cfg = config(notes.path(), LOUD_THEN_IDLE, SILENT_THEN_IDLE);
+    let opts = RecordOptions {
+        max_seconds: Some(1),
+        ..RecordOptions::default()
+    };
+
+    let (result, statuses) = run(&cfg, &opts);
+    result.unwrap();
+
+    let recording = statuses
+        .iter()
+        .find(|s| matches!(s, Status::Recording { .. }))
+        .expect("a recording status");
+    let json = serde_json::to_value(recording).unwrap();
+    let mut keys: Vec<&str> = json
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(keys, ["elapsed", "me_db", "state", "them_db"], "{json}");
+}
+
 #[test]
 fn stops_with_capture_ended_when_both_captures_exit() {
     let notes = tempfile::tempdir().unwrap();
@@ -202,7 +275,7 @@ fn stops_with_capture_ended_when_both_captures_exit() {
 }
 
 #[test]
-fn captures_exiting_after_speech_is_capture_ended_not_silence() {
+fn captures_exiting_after_speech_is_capture_ended() {
     let notes = tempfile::tempdir().unwrap();
     let speech = "head -c 16000 /dev/zero; head -c 32000 /dev/zero | tr '\\0' '@'";
     let cfg = config(notes.path(), speech, "head -c 48000 /dev/zero");
@@ -226,28 +299,6 @@ fn one_capture_exiting_does_not_stop_the_recording() {
 
     let info = SessionInfo::load(&result.unwrap()).unwrap().unwrap();
     assert_eq!(info.stop_reason, StopReason::Max);
-}
-
-#[test]
-fn noisy_mic_above_the_fixed_threshold_still_auto_stops() {
-    let notes = tempfile::tempdir().unwrap();
-    // Constant room noise at 0x0101 = -42 dBFS (above the -50 threshold), a 0.25 s burst at -6 dBFS,
-    // then noise forever, paced in real time (100 ms per chunk).
-    let me = "head -c 48000 /dev/zero | tr '\\0' '\\1'; \
-              head -c 8000 /dev/zero | tr '\\0' '@'; \
-              while true; do head -c 3200 /dev/zero | tr '\\0' '\\1'; sleep 0.1; done";
-    let cfg = config(notes.path(), me, IDLE);
-    let opts = RecordOptions {
-        max_seconds: Some(20),
-        ..RecordOptions::default()
-    };
-    let started = Instant::now();
-
-    let (result, _) = run(&cfg, &opts);
-
-    let info = SessionInfo::load(&result.unwrap()).unwrap().unwrap();
-    assert_eq!(info.stop_reason, StopReason::Silence);
-    assert!(started.elapsed() < Duration::from_secs(10));
 }
 
 #[test]

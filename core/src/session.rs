@@ -9,6 +9,7 @@ pub const SESSION_FILE: &str = "session.json";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum StopReason {
+    /// Only in sessions recorded before auto-stop was removed; never produced now.
     Silence,
     User,
     Max,

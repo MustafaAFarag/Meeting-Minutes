@@ -13,6 +13,9 @@ use crate::levels::wav_peak_db;
 use crate::session::SessionInfo;
 use crate::status::Status;
 
+/// A track whose loudest 100 ms window is at or below this is skipped, not sent to whisper.
+const SILENT_TRACK_DB: f64 = -50.0;
+
 /// Whisper invents these on silence or noise.
 const HALLUCINATIONS: [&str; 6] = [
     "you",
@@ -179,7 +182,7 @@ pub fn transcribe(cfg: &Config, session_dir: &Path, on_status: impl Fn(Status)) 
     let mut segments = Vec::new();
     for (track, wav) in &wavs {
         // Whole-file RMS would skip a quiet speaker in a long call, so look at single windows.
-        if wav_peak_db(wav)? <= cfg.silence_threshold_db {
+        if wav_peak_db(wav)? <= SILENT_TRACK_DB {
             continue;
         }
         on_status(Status::Transcribing { track: *track });

@@ -1,7 +1,7 @@
 # Meeting Notes: test call script
 
 **Who:** Mustafa (the PM, the "Me" side) and one colleague (the "Them" side).
-**How long:** about 4 minutes of talking, plus 1 minute of silence at the end.
+**How long:** about 4 minutes of talking.
 **Date it was written for:** Thursday 22 October 2026. If you run it on another day, the "expected" dates below move with it.
 
 ## Before the call (2 minutes)
@@ -55,13 +55,13 @@ Warning: the transcriber picks one language per side from the first 30 seconds. 
 |---|---|
 | 18 | **Mustafa:** Great, thanks. Talk next week. |
 
-Hang up, **stay silent**, and leave the terminal open.
+Hang up, then press **Ctrl+C** in the terminal. Recording only stops when you press it.
 
 ## After the call: what should happen
 
-| Time after hang-up | You should see in the terminal |
+| After Ctrl+C | You should see in the terminal |
 |---|---|
-| about 60 s | `"state":"stopped" ... "reason":"silence"` |
+| straight away | `"state":"stopped" ... "reason":"signal"` |
 | then 1 to 3 min | `transcribing` → `transcribed` |
 | then about 60 s | `summarizing` with `"engine":"claude"` → `summarized` |
 | then about 40 s | `publishing` → `published` with your page link |
@@ -89,6 +89,6 @@ Then open https://claude.ai/artifact/REDACTED. The new meeting appears within 60
 
 ## If something goes wrong
 
-- **It never stops by itself:** press Ctrl+C. It still transcribes and publishes. Tell me what `me_db` showed in the last status lines.
+- **Ctrl+C does nothing:** create an empty file named `STOP` in the newest session folder under `/mnt/data/audio-lab/MeetingNotes/`. Recording stops within a second.
 - **The terminal shows `"state":"error"`:** copy that line to me.
 - **The page doesn't show the meeting:** run `mn publish`, then reload.
