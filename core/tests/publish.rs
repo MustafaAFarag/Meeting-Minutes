@@ -369,6 +369,36 @@ fn claude_config_dir_is_exported_only_when_configured() {
 }
 
 #[test]
+fn init_page_creates_the_artifact_with_no_meetings() {
+    let _guard = lock();
+    let fx = Fixture::new();
+    let claude = fx.fake(0, "OK\nhttps://claude.ai/artifact/new-page_1\n");
+    let cfg = fx.cfg(&claude);
+    let seen = RefCell::new(Vec::new());
+    mn_core::publish::init_page_with_config_dir(&cfg, &fx.config_dir(), |s: Status| {
+        seen.borrow_mut().push(serde_json::to_value(s).unwrap())
+    })
+    .unwrap();
+
+    let prompt = claude.call(1).argv[1].clone();
+    assert!(
+        prompt.starts_with("Publish ./index.html as a new artifact"),
+        "{prompt}"
+    );
+    let files = files_map(&prompt);
+    assert_eq!(files.as_object().unwrap().len(), 1, "{files}");
+    assert!(files.get("data/index.json").is_some());
+    assert_eq!(
+        fs::read_to_string(fx.url_file()).unwrap().trim(),
+        "https://claude.ai/artifact/new-page_1"
+    );
+    assert_eq!(
+        seen.into_inner().last().unwrap(),
+        &json!({"state": "published", "url": "https://claude.ai/artifact/new-page_1"})
+    );
+}
+
+#[test]
 fn nothing_pending_does_not_call_claude() {
     let _guard = lock();
     let fx = Fixture::new();

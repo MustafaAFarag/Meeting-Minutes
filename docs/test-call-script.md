@@ -66,7 +66,7 @@ Hang up, then press **Ctrl+C** in the terminal. Recording only stops when you pr
 | then about 60 s | `summarizing` with `"engine":"claude"` → `summarized` |
 | then about 40 s | `publishing` → `published` with your page link |
 
-Then open https://claude.ai/artifact/REDACTED. The new meeting appears within 60 seconds, or straight away if you reload.
+Then open your My Meetings page (Open My Meetings in the widget). The new meeting appears within 60 seconds, or straight away if you reload.
 
 ## Checklist (tick while you check the page)
 
@@ -84,11 +84,11 @@ Then open https://claude.ai/artifact/REDACTED. The new meeting appears within 60
 | ☐ | Transcript | Opens; "Me" and "Them" lines are separate and not doubled |
 | ☐ | Download | "Download transcript" saves a .md file |
 | ☐ | Tick | Tick one to-do, reload: it stays ticked |
-| ☐ | Audio | The session folder in `/mnt/data/audio-lab/MeetingNotes/` has no .wav files left |
+| ☐ | Audio | The session folder in your notes folder (`notes_dir`, default `~/MeetingNotes`) has no .wav files left |
 | ☐ | Arabic (optional) | Lines 16–17 appear as tasks in English |
 
 ## If something goes wrong
 
-- **Ctrl+C does nothing:** create an empty file named `STOP` in the newest session folder under `/mnt/data/audio-lab/MeetingNotes/`. Recording stops within a second.
+- **Ctrl+C does nothing:** create an empty file named `STOP` in the newest session folder under your notes folder (`notes_dir`, default `~/MeetingNotes`). Recording stops within a second.
 - **The terminal shows `"state":"error"`:** copy that line to me.
 - **The page doesn't show the meeting:** run `mn publish`, then reload.

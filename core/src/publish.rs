@@ -33,9 +33,34 @@ pub fn publish_with_config_dir(
     config_dir: &Path,
     on_status: impl Fn(Status),
 ) -> Result<()> {
+    publish_inner(cfg, config_dir, false, on_status)
+}
+
+/// Publishes the page even with no pending meetings: on a new install it creates the
+/// "My Meetings" artifact and saves its URL; later it refreshes the page itself.
+pub fn init_page(cfg: &Config, on_status: impl Fn(Status)) -> Result<()> {
+    let config_dir = dirs::config_dir().context("could not find the user config directory")?;
+    init_page_with_config_dir(cfg, &config_dir, on_status)
+}
+
+/// Same as `init_page`, with the user config directory given.
+pub fn init_page_with_config_dir(
+    cfg: &Config,
+    config_dir: &Path,
+    on_status: impl Fn(Status),
+) -> Result<()> {
+    publish_inner(cfg, config_dir, true, on_status)
+}
+
+fn publish_inner(
+    cfg: &Config,
+    config_dir: &Path,
+    always: bool,
+    on_status: impl Fn(Status),
+) -> Result<()> {
     let sessions = sessions_with_meeting(&cfg.notes_dir)?;
     let pending: Vec<&Session> = sessions.iter().filter(|s| s.pending).collect();
-    if pending.is_empty() {
+    if pending.is_empty() && !always {
         return Ok(());
     }
     on_status(Status::Publishing {

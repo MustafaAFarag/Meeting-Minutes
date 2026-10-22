@@ -104,15 +104,40 @@ jobs:
         working-directory: app/src-tauri
         run: cargo tauri build ${{ matrix.tauri_args }}
 
-      - name: Upload installer
+      # The setup scripts download from releases/latest/download/<name>, so every
+      # file gets a fixed name. `mn` is the command-line tool the setup uses to
+      # create the My Meetings page and to check the install.
+      - name: Collect files with fixed names
+        run: |
+          mkdir -p out
+          case "${{ matrix.name }}" in
+            macos)
+              cp ${{ matrix.bundle_glob }} out/MeetingNotes-macos.dmg
+              (cd core && cargo build --release --target aarch64-apple-darwin && cargo build --release --target x86_64-apple-darwin)
+              lipo -create -output out/mn-macos core/target/aarch64-apple-darwin/release/mn core/target/x86_64-apple-darwin/release/mn
+              ;;
+            windows)
+              cp ${{ matrix.bundle_glob }} out/MeetingNotes-windows-setup.exe
+              (cd core && cargo build --release)
+              cp core/target/release/mn.exe out/mn-windows.exe
+              ;;
+            linux)
+              cp ${{ matrix.bundle_glob }} out/MeetingNotes-linux.AppImage
+              (cd core && cargo build --release)
+              cp core/target/release/mn out/mn-linux
+              ;;
+          esac
+          ls -la out
+
+      - name: Upload files
         uses: actions/upload-artifact@v4
         with:
           name: meeting-notes-${{ matrix.name }}
-          path: ${{ matrix.bundle_glob }}
+          path: out/*
           if-no-files-found: error
 
   release:
-    name: Draft release
+    name: Release
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-22.04
@@ -127,11 +152,10 @@ jobs:
       - name: List files
         run: find dist -type f
 
+      # Published (not draft) so releases/latest/download/... works for the setup scripts.
       - uses: softprops/action-gh-release@v2
         with:
-          draft: true
-          files: |
-            dist/**/*.dmg
-            dist/**/*.exe
-            dist/**/*.AppImage
+          draft: false
+          make_latest: true
+          files: dist/**/*
           fail_on_unmatched_files: true

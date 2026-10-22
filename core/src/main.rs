@@ -35,6 +35,8 @@ enum Command {
     Summarize { session_dir: PathBuf },
     /// Publish every pending meeting to the "My Meetings" artifact
     Publish,
+    /// Create the "My Meetings" artifact (first install) or refresh the page, even with no meetings
+    InitPage,
     /// Transcribe, summarize and publish a session, skipping stages that are already done
     Process { session_dir: PathBuf },
     /// Record, then process
@@ -80,6 +82,7 @@ fn run(cli: Cli) -> Result<()> {
             mn_core::summarize(&cfg, &session_dir, emit)?;
         }
         Command::Publish => mn_core::publish(&cfg, emit)?,
+        Command::InitPage => mn_core::publish::init_page(&cfg, emit)?,
         Command::Process { session_dir } => mn_core::process(&cfg, &session_dir, emit)?,
         Command::Run { max_seconds } => {
             let session = mn_core::record(&cfg, &record_options(max_seconds)?, emit)?;
