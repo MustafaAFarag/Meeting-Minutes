@@ -22,9 +22,11 @@ The pilot PM (Mac) uses it on 5 real meetings in 1 week. Each card is correct (r
   - [x] B: `mac/audiotap` Swift helper for Mac system audio, Core Audio process tap
   - [x] C: Tauri bundling (.dmg / NSIS / AppImage) + `.github/workflows/build.yml`. Releases use fixed asset names
   - [x] `mn init-page` creates My Meetings on a fresh account (verified on the personal account, no M365)
-  - [ ] Push to github.com/MustafaAFarag/Meeting-Minutes (public) + tag v0.1.0 → first CI release. Needs Mustafa: repo not created yet, push is his action
+  - [x] Pushed to github.com/MustafaAFarag/Meeting-Minutes (public), tag v0.1.0 → first CI release build (run 39820411166)
 - [x] Ask Claude in My Meetings (minutes .docx in CTC format, recaps, free questions)
-- [ ] 6. One-sentence setup: `scripts/setup/{mac,linux,windows}`, SETUP.md, README, CLAUDE.md/AGENTS.md (brief `.delegate/step7-setup.txt`, worker running in `/mnt/data/mn-worktrees/step7`)
+- [x] 6. One-sentence setup: `scripts/setup/{mac,linux,windows}`, SETUP.md, README, CLAUDE.md/AGENTS.md. linux.sh passed 2 runs in a sandboxed home
+  - [ ] mac.sh on the brother's MacBook (first real run), windows.ps1 on Mustafa's PC (first real run)
+  - [ ] real Linux install from the published release (downloads whisper + model)
 - [ ] 7. Install on pilot Mac, run the pilot week
 
 ## Decisions
