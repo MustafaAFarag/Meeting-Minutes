@@ -91,11 +91,8 @@ jobs:
         working-directory: app/src-tauri
         run: cargo tauri icon app-icon.png
 
-      # core's integration tests use Unix-only APIs (std::os::unix), so they
-      # do not compile on Windows. The core code itself is still built and
-      # tested through the app below.
+      # Integration tests that need Unix (/proc, sh fakes) are cfg(unix) and skip themselves.
       - name: Test core
-        if: runner.os != 'Windows'
         working-directory: core
         run: cargo test
 
