@@ -151,6 +151,12 @@ a { color: var(--ctl); text-underline-offset: 2px; }
 .dhead { margin-bottom: 12px; }
 .dhead .chip { background: var(--surface); }
 .dhead h2 { font-size: 24px; font-weight: 500; }
+.tline { display: flex; align-items: center; gap: 8px; }
+.pen { background: none; border: 0; padding: 4px; border-radius: 6px; color: var(--muted); opacity: .7; line-height: 0; flex: none; }
+.pen:hover, .pen:focus-visible { opacity: 1; color: var(--fg); }
+.pen svg { width: 15px; height: 15px; }
+.rename { font: 500 22px/1.25 var(--font-display); color: var(--fg); background: transparent; border: 1px solid var(--line); border-radius: 8px; padding: 2px 8px; width: min(100%, 640px); }
+.body .rename { font-size: 17px; }
 .dgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .dgrid > * { min-width: 0; }
 .dgrid .full { grid-column: 1 / -1; }
@@ -200,6 +206,9 @@ a { color: var(--ctl); text-underline-offset: 2px; }
   var writeChain = new Map();
   var ticks = new Map(), ticksLocal = false;   // meeting id -> {key: true}
   function doneOf(m) { return ticks.get(m.id) || {}; }
+  var titles = new Map();                       // meeting id -> the user's own title
+  function titleOf(m) { return titles.get(m.id) || m.title || ""; }
+  var editing = null, editDraft = "";           // meeting id being renamed, and the text typed so far
 
   var $ = function (id) { return document.getElementById(id); };
   function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]; }); }
@@ -242,7 +251,7 @@ a { color: var(--ctl); text-underline-offset: 2px; }
   }
   function matches(m) {
     if (!query) return true;
-    var hay = [m.title, m.client, m.project, (m.summary || []).join(" "), (m.decisions || []).join(" "),
+    var hay = [titleOf(m), m.client, m.project, (m.summary || []).join(" "), (m.decisions || []).join(" "),
       (m.my_todos || []).map(function (t) { return t.text; }).join(" "),
       (m.waiting_on || []).map(function (t) { return t.text + " " + t.who; }).join(" "),
       (m.deliverables || []).map(function (t) { return t.what; }).join(" ")].join(" ").toLowerCase();
@@ -255,7 +264,7 @@ a { color: var(--ctl); text-underline-offset: 2px; }
     return '<li class="item' + (it.done ? " done" : "") + '"><input type="checkbox" data-tick="' + id + '|' + it.key + '"' + (it.done ? " checked" : "") +
       (canWrite ? "" : " disabled") + ' aria-label="Tick off">' +
       '<span class="t"><span>' + (showWho && it.who ? "<b>" + esc(it.who) + ":</b> " : "") + esc(it.text) + '</span> ' + (it.done ? "" : dueHtml(it.due)) +
-      '<span class="sm"><button class="linkbtn" data-goto="' + id + '">' + esc(it.m.title) + "</button></span></span></li>";
+      '<span class="sm"><button class="linkbtn" data-goto="' + id + '">' + esc(titleOf(it.m)) + "</button></span></span></li>";
   }
   function inCardItem(m, it, who) {
     return '<li class="item' + (it.done ? " done" : "") + '"><input type="checkbox" data-tick="' + esc(m.id) + '|' + it.key + '"' + (it.done ? " checked" : "") +
@@ -307,22 +316,29 @@ a { color: var(--ctl); text-underline-offset: 2px; }
   function cardHtml(m) {
     var open = expanded.has(m.id), h = headInfo(m);
     var out = '<article class="card' + (open ? " open" : "") + '" id="m-' + esc(m.id) + '"><button class="card-head" data-toggle="' + esc(m.id) + '" aria-expanded="' + open + '">' +
-      '<div class="main"><h3>' + esc(m.title) + '</h3><div class="meta">' + h.when + "</div>" +
+      '<div class="main"><h3>' + esc(titleOf(m)) + '</h3><div class="meta">' + h.when + "</div>" +
       (h.chips ? '<div class="chips">' + h.chips + "</div>" : "") + '</div><span class="chev" aria-hidden="true">\u25B6</span></button>';
     if (!open) return out + "</article>";
     var p = parts(m);
-    return out + '<div class="body">' + p.summary + p.decisions + p.deliv + p.todos + p.waits + p.links + p.people + p.btns + "</div></article>";
+    return out + '<div class="body">' + (canWrite ? titleHtml(m, "") : "") + p.summary + p.decisions + p.deliv + p.todos + p.waits + p.links + p.people + p.btns + "</div></article>";
   }
 
   /* wide screens: compact row on the left, full detail on the right */
   function rowHtml(m, sel) {
     var h = headInfo(m);
-    return '<button class="row' + (sel ? " sel" : "") + '" data-select="' + esc(m.id) + '"><span class="rt">' + esc(m.title) + '</span><span class="meta">' + h.when + "</span>" +
+    return '<button class="row' + (sel ? " sel" : "") + '" data-select="' + esc(m.id) + '"><span class="rt">' + esc(titleOf(m)) + '</span><span class="meta">' + h.when + "</span>" +
       (h.chips ? '<span class="chips">' + h.chips + "</span>" : "") + "</button>";
+  }
+  var PEN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>';
+  /* The title with a pen to rename it. tag "" = only the pen (narrow cards already show the title). */
+  function titleHtml(m, tag) {
+    if (editing === m.id) return '<div class="tline"><input class="rename" id="rename-input" data-rename="' + esc(m.id) + '" maxlength="120" aria-label="Meeting name"></div>';
+    var pen = canWrite ? '<button class="pen" data-pen="' + esc(m.id) + '" title="Rename" aria-label="Rename meeting">' + PEN + "</button>" : "";
+    return '<div class="tline">' + (tag ? "<" + tag + ">" + esc(titleOf(m)) + "</" + tag + ">" : "") + pen + "</div>";
   }
   function detailHtml(m) {
     var h = headInfo(m), p = parts(m);
-    return '<div class="dhead"><h2>' + esc(m.title) + '</h2><div class="meta">' + h.when + "</div>" + (h.chips ? '<div class="chips">' + h.chips + "</div>" : "") + "</div>" +
+    return '<div class="dhead">' + titleHtml(m, "h2") + '<div class="meta">' + h.when + "</div>" + (h.chips ? '<div class="chips">' + h.chips + "</div>" : "") + "</div>" +
       '<div class="dgrid"><div class="col">' + (p.summary ? '<div class="dc">' + p.summary + "</div>" : "") + (p.decisions ? '<div class="dc">' + p.decisions + "</div>" : "") + "</div>" +
       '<div class="col">' + (p.todos ? '<div class="dc">' + p.todos + "</div>" : "") + (p.waits ? '<div class="dc">' + p.waits + "</div>" : "") + "</div>" +
       (p.deliv ? '<div class="dc full">' + p.deliv + "</div>" : "") +
@@ -331,6 +347,12 @@ a { color: var(--ctl); text-underline-offset: 2px; }
 
   /* ---------- render ---------- */
   function render() {
+    renderPage();
+    // Re-rendering replaces the rename field, so put the typed text and the cursor back.
+    var inp = editing && document.getElementById("rename-input");
+    if (inp && document.activeElement !== inp) { inp.value = editDraft; inp.focus(); inp.setSelectionRange(editDraft.length, editDraft.length); }
+  }
+  function renderPage() {
     $("today-label").textContent = dayLabel(new Date()) + ", " + new Date().getDate() + " " + MONTHS[new Date().getMonth()];
     var items = allItems(), open = items.filter(function (i) { return !i.done; });
     var todos = open.filter(function (i) { return i.kind === "todo"; }), waits = open.filter(function (i) { return i.kind === "wait"; });
@@ -394,6 +416,30 @@ a { color: var(--ctl); text-underline-offset: 2px; }
     writeChain.set(id, p);
   }
 
+  function saveLocalTitles() {
+    try { var o = {}; titles.forEach(function (v, k) { o[k] = v; }); localStorage.setItem("mm-titles", JSON.stringify(o)); } catch (e) {}
+  }
+  function startRename(id) {
+    var m = meetings.get(id); if (!m || !canWrite) return;
+    editing = id; editDraft = titleOf(m); render();
+    var inp = document.getElementById("rename-input"); if (inp) inp.select();
+  }
+  /* An empty name, or the AI's own name, removes the override. */
+  function finishRename(save) {
+    var id = editing; editing = null;
+    var m = meetings.get(id); if (!m) { render(); return; }
+    var name = editDraft.trim().slice(0, 120), prev = titles.get(id);
+    if (!save || name === titleOf(m)) { render(); return; }
+    var custom = name && name !== m.title ? name : null;
+    if (custom) titles.set(id, custom); else titles.delete(id);
+    render();                                                        // instant
+    if (!db) { saveLocalTitles(); return; }
+    var key = "t:" + id, ref = db.doc("titles/" + id);
+    var p = (writeChain.get(key) || Promise.resolve()).then(function () { return custom ? ref.set({ title: custom }) : ref.delete(); })
+      .catch(function () { if (prev) titles.set(id, prev); else titles.delete(id); render(); toast("Could not save that. Try again in a moment."); });
+    writeChain.set(key, p);
+  }
+
   function loadTranscript(id) {
     if (trText.has(id) || trBusy.has(id)) return Promise.resolve();
     trBusy.add(id); render();
@@ -408,13 +454,14 @@ a { color: var(--ctl); text-underline-offset: 2px; }
     loadTranscript(id).then(function () {
       var text = trText.get(id);
       if (!text) { toast("The transcript is not available for this meeting."); return; }
-      var name = (id + " " + (m.title || "")).replace(/[\\/:*?"<>|]+/g, "-").trim() + ".md";
+      var name = (id + " " + titleOf(m)).replace(/[\\/:*?"<>|]+/g, "-").trim() + ".md";
       downloads.save({ filename: name, data: text }).then(function () { toast("Transcript saved."); })
         .catch(function (e) { if (e && e.code !== "declined") toast("Could not save the transcript."); });
     });
   }
 
   document.addEventListener("click", function (ev) {
+    var pen = ev.target.closest("[data-pen]"); if (pen) { startRename(pen.dataset.pen); return; }
     var el = ev.target.closest("[data-tab],[data-select],[data-toggle],[data-tr],[data-dl],[data-goto]"); if (!el) return;
     if (el.dataset.tab) { tab = el.dataset.tab; render(); }
     else if (el.dataset.select) { selected = el.dataset.select; render(); }
@@ -433,6 +480,17 @@ a { color: var(--ctl); text-underline-offset: 2px; }
     var p = cb.dataset.tick.split("|"); tick(p[0], p[1], cb.checked);
   });
   $("search").addEventListener("input", function (e) { query = e.target.value.trim(); render(); });
+  document.addEventListener("input", function (ev) { if (ev.target.dataset && ev.target.dataset.rename) editDraft = ev.target.value; });
+  document.addEventListener("keydown", function (ev) {
+    if (!ev.target.dataset || !ev.target.dataset.rename) return;
+    if (ev.key === "Enter") { ev.preventDefault(); finishRename(true); }
+    else if (ev.key === "Escape") { ev.preventDefault(); finishRename(false); }
+  });
+  // Clicking away saves. A field that a re-render removed is not "clicked away" from.
+  document.addEventListener("focusout", function (ev) {
+    var t = ev.target;
+    if (t.dataset && t.dataset.rename && editing === t.dataset.rename) setTimeout(function () { if (t.isConnected && editing) finishRename(true); }, 0);
+  });
 
   /* ---------- boot ---------- */
   var stamps = new Map(), refreshing = false;
@@ -470,10 +528,16 @@ a { color: var(--ctl); text-underline-offset: 2px; }
       snap.docs.forEach(function (doc) { ticks.set(doc.id, doc.data() || {}); });
       render();
     }, function () { db = null; useLocalTicks(); });
+    db.collection("titles").onSnapshot(function (snap) {
+      titles = new Map();
+      snap.docs.forEach(function (doc) { var t = (doc.data() || {}).title; if (t) titles.set(doc.id, String(t)); });
+      render();
+    }, function () {});
   }).catch(function () { db = null; useLocalTicks(); });
   function useLocalTicks() {
     ticksLocal = true;
     try { var o = JSON.parse(localStorage.getItem("mm-ticks") || "{}"); Object.keys(o).forEach(function (k) { ticks.set(k, o[k]); }); } catch (e) {}
+    try { var t = JSON.parse(localStorage.getItem("mm-titles") || "{}"); Object.keys(t).forEach(function (k) { titles.set(k, String(t[k])); }); } catch (e) {}
     render();
   }
 })();
