@@ -158,7 +158,7 @@ impl NotchState {
             prefs: Mutex::new(prefs),
             prefs_path,
             anchor: Mutex::new(None),
-            folded: AtomicBool::new(true),
+            folded: AtomicBool::new(false),
             dragging: AtomicBool::new(false),
             user_hidden: AtomicBool::new(false),
             own_move_until: Mutex::new(None),
