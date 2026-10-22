@@ -33,5 +33,8 @@ The pilot PM (Mac) uses it on 5 real meetings in 1 week. Each card is correct (r
 - Whisper model per machine: small on the Arch CPU (about 3× real time), large-v3-turbo planned for the Mac (GPU; speed not measured yet).
 - Timing: summarizing takes about 40–60 s, publishing about 30–40 s.
 
+- 2026-10-22, after the first real test call: **auto-stop is removed**. Recording stops only when the user presses Stop in the widget (or Ctrl+C / STOP file). The reason: mic noise such as typing kept resetting the silence timer. The widget is Start → recording timer → Stop → rotating icon "Transcribing… / Writing your notes… / Updating My Meetings…" → Done.
+- First real call (3 min, script): calendar title matched, 6 to-dos (5 English + 1 Arabic), decisions and deliverables correct, page auto-updated. Small misses: "chase agency" got a date (30 Oct) instead of none; Arabic line 17 (colleague reviews Monday) was not in waiting-on.
+
 ## Blockers / open
 - Using speakers instead of headphones means the mic re-records the other side, so lines get duplicated. v1 says "use headphones"; dedup is a later task.
