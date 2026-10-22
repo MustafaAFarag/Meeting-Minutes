@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Meeting Notes</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main id="app" data-view="idle">
+
+    <section class="view" data-view="idle">
+      <button id="start" class="btn big" type="button">Start recording</button>
+    </section>
+
+    <section class="view" data-view="recording">
+      <div class="row top">
+        <span class="rec-dot" aria-hidden="true"></span>
+        <span id="timer" class="timer">00:00</span>
+      </div>
+      <div class="meters">
+        <div class="meter"><span class="label">You</span><span class="bar"><i id="bar-me"></i></span></div>
+        <div class="meter"><span class="label">Them</span><span class="bar"><i id="bar-them"></i></span></div>
+      </div>
+      <button id="stop" class="btn big" type="button">Stop</button>
+    </section>
+
+    <section class="view" data-view="working">
+      <div class="row working">
+        <svg class="spinner" viewBox="0 0 24 24" width="30" height="30" aria-hidden="true">
+          <g stroke="#D97757" stroke-width="2.6" stroke-linecap="round">
+            <line x1="12" y1="2.5" x2="12" y2="7"/>
+            <line x1="12" y1="17" x2="12" y2="21.5"/>
+            <line x1="2.5" y1="12" x2="7" y2="12"/>
+            <line x1="17" y1="12" x2="21.5" y2="12"/>
+            <line x1="5.3" y1="5.3" x2="8.5" y2="8.5"/>
+            <line x1="15.5" y1="15.5" x2="18.7" y2="18.7"/>
+            <line x1="18.7" y1="5.3" x2="15.5" y2="8.5"/>
+            <line x1="8.5" y1="15.5" x2="5.3" y2="18.7"/>
+          </g>
+        </svg>
+        <span id="working-text" class="working-text">Transcribing…</span>
+      </div>
+    </section>
+
+    <section class="view" data-view="done">
+      <p class="done-text">Done ✓</p>
+      <button id="done-open" class="btn big" type="button">Open My Meetings</button>
+    </section>
+
+    <section class="view" data-view="error">
+      <p class="error-title">Something went wrong</p>
+      <p id="error-detail" class="error-detail"></p>
+      <div class="row buttons">
+        <button id="retry" class="btn" type="button">Try again</button>
+        <button id="dismiss" class="btn ghost" type="button">Dismiss</button>
+      </div>
+    </section>
+
+    <a id="open-meetings" class="link" href="#" role="button">Open My Meetings</a>
+    <p id="notice" class="notice" role="status" hidden></p>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

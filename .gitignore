@@ -7,3 +7,7 @@ node_modules/
 artifact/ARTIFACT_URL.txt
 .claude/
 docs/*.pdf
+
+# Tauri widget
+app/src-tauri/target
+app/src-tauri/gen
