@@ -17,7 +17,11 @@ The pilot PM (Mac) uses it on 5 real meetings in 1 week. Each card is correct (r
   - [x] auto-stop removed; plain widget (Start/levels/Stop/spinner/Done) — user confirmed it works
   - [x] notch pill at top edge, hover unfold, drag + remembered position, Ctrl+Alt+M show/hide, Ctrl+Alt+R record toggle, start at login (tray toggle). Folded look checked by screenshot; unfold/drag/hotkeys need the user's check
   - [ ] 9:00 notification
-- [ ] 5. Mac capture sidecar (Swift) + GitHub Actions release (.dmg, AppImage)
+- [ ] 5. Mac + Windows (decided 2026-10-22: both now; Mustafa tests on his brother's MacBook and his own Windows PC; PM test is 2026-10-23)
+  - [ ] A: `mn capture mic|system` via cpal (Windows loopback + mic, Mac mic), per-OS capture defaults, CREATE_NO_WINDOW, claude.cmd resolution (worker running)
+  - [ ] B: `mac/audiotap` Swift helper for Mac system audio, Core Audio process tap (worker running)
+  - [ ] C: Tauri bundling (.dmg / NSIS / AppImage) + `.github/workflows/build.yml` (worker running). Repo stays local until Mustafa decides public/private
+  - [ ] setup steps per OS: whisper-cli + model, claude CLI, config
 - [ ] 6. Repo CLAUDE.md + `setup` skill for beginner PMs
 - [ ] 7. Install on pilot Mac, run the pilot week
 
