@@ -8,16 +8,22 @@
   },
   "app": {
     "withGlobalTauri": true,
+    "macOSPrivateApi": true,
     "windows": [
       {
         "label": "main",
         "title": "Meeting Notes",
-        "width": 300,
-        "height": 160,
-        "resizable": false,
+        "width": 180,
+        "height": 34,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "visible": false,
+        "resizable": true,
         "maximizable": false,
         "alwaysOnTop": true,
-        "skipTaskbar": true
+        "skipTaskbar": true,
+        "visibleOnAllWorkspaces": true
       }
     ],
     "security": {

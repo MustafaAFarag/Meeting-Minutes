@@ -1,24 +1,33 @@
 mod meetings;
+mod notch;
 mod runner;
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
 use mn_core::record::RecordOptions;
 use mn_core::{Config, Status};
-use tauri::menu::{Menu, MenuItem};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
+use tauri::{
+    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, State, Window, WindowEvent,
+};
+use tauri_plugin_autostart::{MacosLauncher, ManagerExt as _};
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use tauri_plugin_opener::OpenerExt;
 
+use notch::{Rect, WidgetPrefs};
 use runner::RunState;
 
 /// The event the UI listens to. The payload is the core's `Status` as JSON.
 const STATUS_EVENT: &str = "mn-status";
 const WINDOW_LABEL: &str = "main";
+/// After the window stops moving for this long, a drag counts as finished.
+const DRAG_SETTLE: Duration = Duration::from_millis(250);
 
 type Shared<'a> = State<'a, Arc<RunState>>;
 
@@ -113,6 +122,170 @@ fn open_meetings(app: AppHandle) -> Result<(), String> {
         .map_err(|e| format!("Could not open the browser: {e}"))
 }
 
+/// Where the pill hangs: the horizontal centre it keeps while resizing, and the top edge of the
+/// monitor it is on (physical pixels).
+#[derive(Clone, Copy)]
+struct Anchor {
+    center_x: i32,
+    top_y: i32,
+}
+
+struct NotchState {
+    prefs: Mutex<WidgetPrefs>,
+    prefs_path: Option<PathBuf>,
+    anchor: Mutex<Option<Anchor>>,
+    /// Counts window moves, so only the last one of a drag is acted on.
+    moves: AtomicU64,
+}
+
+impl NotchState {
+    fn load() -> Self {
+        let prefs_path = dirs::config_dir().map(|dir| notch::prefs_path(&dir));
+        let prefs = prefs_path
+            .as_deref()
+            .map(WidgetPrefs::load)
+            .unwrap_or_default();
+        Self {
+            prefs: Mutex::new(prefs),
+            prefs_path,
+            anchor: Mutex::new(None),
+            moves: AtomicU64::new(0),
+        }
+    }
+
+    /// Changes the prefs and writes them out. A failed write is logged and otherwise ignored.
+    fn update_prefs(&self, change: impl FnOnce(&mut WidgetPrefs)) {
+        let Ok(mut prefs) = self.prefs.lock() else {
+            return;
+        };
+        let before = prefs.clone();
+        change(&mut prefs);
+        if *prefs == before {
+            return;
+        }
+        if let Some(path) = &self.prefs_path {
+            if let Err(e) = prefs.save(path) {
+                eprintln!("could not save {}: {e}", path.display());
+            }
+        }
+    }
+
+    fn anchor(&self) -> Option<Anchor> {
+        self.anchor.lock().ok().and_then(|a| *a)
+    }
+
+    fn set_anchor(&self, anchor: Anchor) {
+        if let Ok(mut a) = self.anchor.lock() {
+            *a = Some(anchor);
+        }
+    }
+}
+
+fn to_rect(monitor: &tauri::Monitor) -> Rect {
+    let (pos, size) = (monitor.position(), monitor.size());
+    Rect {
+        x: pos.x,
+        y: pos.y,
+        width: i32::try_from(size.width).unwrap_or(i32::MAX),
+        height: i32::try_from(size.height).unwrap_or(i32::MAX),
+    }
+}
+
+/// All monitors, and the primary one (the first one if the system names none).
+fn monitors(window: &Window) -> Option<(Vec<Rect>, Rect)> {
+    let rects: Vec<Rect> = window
+        .available_monitors()
+        .ok()?
+        .iter()
+        .map(to_rect)
+        .collect();
+    let primary = window
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .map(|m| to_rect(&m))
+        .or_else(|| rects.first().copied())?;
+    Some((rects, primary))
+}
+
+fn physical_width(window: &Window, logical: f64) -> i32 {
+    let scale = window.scale_factor().unwrap_or(1.0);
+    (logical * scale).round() as i32
+}
+
+/// Moves the window so its centre is at the anchor, hanging from the top edge.
+fn place(window: &Window, anchor: Anchor, logical_width: f64) {
+    let x = notch::anchored_x(anchor.center_x, physical_width(window, logical_width));
+    if let Err(e) = window.set_position(PhysicalPosition::new(x, anchor.top_y)) {
+        eprintln!("could not position the window: {e}");
+    }
+}
+
+/// Resizes between the folded and unfolded pill, keeping the same top-centre point.
+#[tauri::command]
+fn set_size(window: Window, state: State<'_, NotchState>, folded: bool) -> Result<(), String> {
+    let (width, height) = notch::size_for(folded);
+    window
+        .set_size(LogicalSize::new(width, height))
+        .map_err(|e| format!("Could not resize the window: {e}"))?;
+    if let Some(anchor) = state.anchor() {
+        place(&window, anchor, width);
+    }
+    Ok(())
+}
+
+/// Puts the window at the saved (or default) spot. Runs once, before the window is shown.
+fn init_position(window: &Window, state: &NotchState) {
+    let Some((rects, primary)) = monitors(window) else {
+        eprintln!("no monitor information; leaving the window where the system put it");
+        return;
+    };
+    let saved = state.prefs.lock().ok().and_then(|p| p.center_x);
+    let center_x = notch::resolve_center(saved, &rects, primary);
+    let anchor = Anchor {
+        center_x,
+        top_y: notch::top_y_for(center_x, &rects, primary),
+    };
+    state.set_anchor(anchor);
+    place(window, anchor, notch::FOLDED_SIZE.0);
+}
+
+/// A drag ends when the window has stopped moving for `DRAG_SETTLE`.
+fn on_moved(window: &Window) {
+    let seq = window
+        .state::<NotchState>()
+        .moves
+        .fetch_add(1, Ordering::SeqCst)
+        + 1;
+    let window = window.clone();
+    thread::spawn(move || {
+        thread::sleep(DRAG_SETTLE);
+        if window.state::<NotchState>().moves.load(Ordering::SeqCst) == seq {
+            settle(&window);
+        }
+    });
+}
+
+/// Snaps the pill back to the top edge, keeps its x, and remembers the new centre.
+fn settle(window: &Window) {
+    let (Ok(pos), Ok(size)) = (window.outer_position(), window.outer_size()) else {
+        return;
+    };
+    let Some((rects, primary)) = monitors(window) else {
+        return;
+    };
+    let center_x = notch::center_from_x(pos.x, i32::try_from(size.width).unwrap_or(0));
+    let top_y = notch::top_y_for(center_x, &rects, primary);
+    let state = window.state::<NotchState>();
+    state.set_anchor(Anchor { center_x, top_y });
+    if pos.y != top_y {
+        if let Err(e) = window.set_position(PhysicalPosition::new(pos.x, top_y)) {
+            eprintln!("could not snap the window to the top edge: {e}");
+        }
+    }
+    state.update_prefs(|p| p.center_x = Some(center_x));
+}
+
 fn show_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
         let _ = window.show();
@@ -121,15 +294,99 @@ fn show_window(app: &AppHandle) {
     }
 }
 
+fn hide_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
+        let _ = window.hide();
+    }
+}
+
+fn toggle_window(app: &AppHandle) {
+    let visible = app
+        .get_webview_window(WINDOW_LABEL)
+        .and_then(|w| w.is_visible().ok())
+        .unwrap_or(false);
+    if visible {
+        hide_window(app);
+    } else {
+        show_window(app);
+    }
+}
+
+/// Ctrl+Alt+M (Control+Option+M on macOS). The plugin is added here, not on the builder, because
+/// its own setup fails when there is no X11 connection (Wayland without XWayland), and a failed
+/// plugin setup would stop the whole app. A failure here is only logged.
+fn register_hotkey(app: &AppHandle) {
+    let shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyM);
+    let plugin = tauri_plugin_global_shortcut::Builder::new()
+        .with_handler(move |app, pressed, event| {
+            if *pressed == shortcut && event.state() == ShortcutState::Pressed {
+                toggle_window(app);
+            }
+        })
+        .build();
+    let result = app
+        .plugin(plugin)
+        .map_err(|e| e.to_string())
+        .and_then(|()| {
+            app.global_shortcut()
+                .register(shortcut)
+                .map_err(|e| e.to_string())
+        });
+    if let Err(e) = result {
+        eprintln!("the show/hide hotkey is off: {e}");
+    }
+}
+
+/// Switches start-at-login on the first run only; after that the tray item is the user's choice.
+fn first_run_autostart(app: &AppHandle) {
+    let state = app.state::<NotchState>();
+    if state.prefs.lock().map(|p| p.autostart_set).unwrap_or(true) {
+        return;
+    }
+    match app.autolaunch().enable() {
+        Ok(()) => state.update_prefs(|p| p.autostart_set = true),
+        Err(e) => eprintln!("could not turn on start at login: {e}"),
+    }
+}
+
+fn autostart_enabled(app: &AppHandle) -> bool {
+    app.autolaunch().is_enabled().unwrap_or(false)
+}
+
+fn toggle_autostart(app: &AppHandle, item: &CheckMenuItem<tauri::Wry>) {
+    let launch = app.autolaunch();
+    let result = if autostart_enabled(app) {
+        launch.disable()
+    } else {
+        launch.enable()
+    };
+    if let Err(e) = result {
+        eprintln!("could not change start at login: {e}");
+    }
+    // Show what is really set, whether or not the change worked.
+    let _ = item.set_checked(autostart_enabled(app));
+}
+
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, "show", "Show", true, None::<&str>)?;
+    let hide = MenuItem::with_id(app, "hide", "Hide", true, None::<&str>)?;
+    let login = CheckMenuItem::with_id(
+        app,
+        "autostart",
+        "Start at login",
+        true,
+        autostart_enabled(app),
+        None::<&str>,
+    )?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &quit])?;
+    let menu = Menu::with_items(app, &[&show, &hide, &login, &quit])?;
     let mut tray = TrayIconBuilder::new()
         .tooltip("Meeting Notes")
         .menu(&menu)
-        .on_menu_event(|app, event| match event.id().as_ref() {
+        .on_menu_event(move |app, event| match event.id().as_ref() {
             "show" => show_window(app),
+            "hide" => hide_window(app),
+            "autostart" => toggle_autostart(app, &login),
             "quit" => {
                 let app = app.clone();
                 let state = Arc::clone(&*app.state::<Arc<RunState>>());
@@ -151,18 +408,39 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_autostart::init(
+            MacosLauncher::LaunchAgent,
+            None,
+        ))
         .manage(Arc::new(RunState::default()))
-        .invoke_handler(tauri::generate_handler![start, stop, retry, open_meetings])
+        .manage(NotchState::load())
+        .invoke_handler(tauri::generate_handler![
+            start,
+            stop,
+            retry,
+            open_meetings,
+            set_size
+        ])
         .setup(|app| {
-            build_tray(app.handle())?;
+            let handle = app.handle();
+            if let Some(window) = handle.get_webview_window(WINDOW_LABEL) {
+                init_position(&window.as_ref().window(), &handle.state::<NotchState>());
+            }
+            // The window starts hidden (tauri.conf.json) so it never flashes at the wrong spot.
+            show_window(handle);
+            first_run_autostart(handle);
+            build_tray(handle)?;
+            register_hotkey(handle);
             Ok(())
         })
-        .on_window_event(|window, event| {
+        .on_window_event(|window, event| match event {
             // Closing hides to the tray; "Quit" in the tray menu is the only way out.
-            if let WindowEvent::CloseRequested { api, .. } = event {
+            WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
                 let _ = window.hide();
             }
+            WindowEvent::Moved(_) => on_moved(window),
+            _ => {}
         })
         .run(tauri::generate_context!())
         .expect("error while running the Meeting Notes app");
