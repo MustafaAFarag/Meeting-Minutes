@@ -248,14 +248,13 @@ a { color: var(--ctl); text-underline-offset: 2px; }
   }
 
   /* ---------- data helpers ---------- */
-  /* Archived meetings leave the lists and their to-dos stop counting; the Archived tab brings them back. */
+  /* Archived meetings leave the Meetings list (the Archived tab brings them back). Their to-dos stay. */
   function sortedMeetings(arch) {
     return Array.from(meetings.values()).filter(function (m) { return archived.has(m.id) === !!arch; }).sort(function (a, b) { return String(b.started_at || b.id).localeCompare(String(a.started_at || a.id)); });
   }
   function allItems() {
     var out = [];
     meetings.forEach(function (m) {
-      if (archived.has(m.id)) return;
       var done = doneOf(m);
       (m.my_todos || []).forEach(function (t, i) { var k = "todo-" + i; out.push({ kind: "todo", key: k, m: m, text: t.text, due: t.due, done: !!done[k] }); });
       (m.waiting_on || []).forEach(function (t, i) { var k = "wait-" + i; out.push({ kind: "wait", key: k, m: m, text: t.text, due: t.due, who: t.who, done: !!done[k] }); });
@@ -523,7 +522,7 @@ a { color: var(--ctl); text-underline-offset: 2px; }
     }
     else if (el.dataset.dl) download(el.dataset.dl);
     else if (el.dataset.goto) {
-      var g = el.dataset.goto; selected = g; tab = "meetings"; query = ""; $("search").value = ""; expanded.add(g); render();
+      var g = el.dataset.goto; selected = g; tab = archived.has(g) ? "archived" : "meetings"; query = ""; $("search").value = ""; expanded.add(g); render();
       var c = document.getElementById("m-" + g); if (c) c.scrollIntoView({ block: "start" });
     }
   });
