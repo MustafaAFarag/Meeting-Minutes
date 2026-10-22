@@ -4,6 +4,7 @@ use serde::Serialize;
 
 use crate::capture::Track;
 use crate::session::StopReason;
+use crate::summarize::Engine;
 
 /// One JSON line on stdout. The GUI parses these.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -24,6 +25,22 @@ pub enum Status {
     },
     Transcribed {
         transcript: PathBuf,
+    },
+    Summarizing {
+        engine: Engine,
+        /// Why Claude was given up on; only on the Codex line.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+    Summarized {
+        engine: Engine,
+        card: PathBuf,
+    },
+    Publishing {
+        meetings: usize,
+    },
+    Published {
+        url: String,
     },
     Error {
         message: String,
