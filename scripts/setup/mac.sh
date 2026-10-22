@@ -294,18 +294,13 @@ if [ "$AUTH_OK" -eq 0 ]; then
 fi
 CODEX="$(command -v codex 2>/dev/null || true)"
 
-# Whisper needs Homebrew only when it is not installed yet. Check now, before the big downloads.
-BREW=""
-if [ -z "$WHISPER_CLI_OVERRIDE" ] && [ -z "$(find_whisper)" ]; then
-  BREW="$(find_brew)"
-  [ -n "$BREW" ] || die "Homebrew is not installed. Ask the user to install it from https://brew.sh (it asks for their Mac password), then run this script again."
-fi
-
 CONFIG_DIR="$HOME/Library/Application Support/meeting-notes"
 CONFIG="$CONFIG_DIR/config.toml"
+WHISPER_BIN_DIR="$CONFIG_DIR/bin"
+WHISPER_BIN="$WHISPER_BIN_DIR/whisper-cli"
 BIN_DIR="$HOME/.local/bin"
 MN="$BIN_DIR/mn"
-mkdir -p "$CONFIG_DIR" "$BIN_DIR"
+mkdir -p "$CONFIG_DIR" "$WHISPER_BIN_DIR" "$BIN_DIR"
 
 OLD_NOTES_LINE=""
 OLD_NAME_LINE=""
@@ -367,15 +362,35 @@ if [ -n "$WHISPER_CLI_OVERRIDE" ]; then
   [ -x "$WHISPER_CLI_OVERRIDE" ] || die "--whisper-cli $WHISPER_CLI_OVERRIDE is not an executable file."
   WHISPER="$WHISPER_CLI_OVERRIDE"
 else
-  WHISPER="$(find_whisper)"
+  if [ -x "$WHISPER_BIN" ]; then
+    WHISPER="$WHISPER_BIN"
+  else
+    WHISPER="$(find_whisper)"
+  fi
   if [ -n "$WHISPER" ]; then
     echo "Already installed: $WHISPER"
   else
-    echo "Running: brew install whisper-cpp (a few minutes)..."
-    HOMEBREW_NO_ENV_HINTS=1 "$BREW" install whisper-cpp ||
-      die "brew could not install whisper-cpp. Run '$BREW install whisper-cpp' in Terminal, fix what it says, then run this script again."
-    WHISPER="$("$BREW" --prefix)/bin/whisper-cli"
-    [ -x "$WHISPER" ] || die "brew installed whisper-cpp but $WHISPER is missing. Show this message to the developer."
+    rm -f "$WHISPER_BIN" "$WHISPER_BIN.part"
+    if (
+      fetch_release "whisper-cli-macos" "$WHISPER_BIN" &&
+        chmod +x "$WHISPER_BIN" &&
+        { xattr -d com.apple.quarantine "$WHISPER_BIN" >/dev/null 2>&1 || true; } &&
+        { codesign --force --sign - "$WHISPER_BIN" >/dev/null 2>&1 || true; } &&
+        "$WHISPER_BIN" --help >/dev/null 2>&1
+    ) >/dev/null 2>&1; then
+      WHISPER="$WHISPER_BIN"
+      echo "Downloaded: $WHISPER"
+    else
+      rm -f "$WHISPER_BIN" "$WHISPER_BIN.part"
+      BREW="$(find_brew)"
+      [ -n "$BREW" ] || die "Could not install whisper. Ask the user to install Homebrew: open Terminal, paste the command from https://brew.sh, press Enter and type their Mac password when asked. Then run this script again."
+      echo "Running: brew install whisper-cpp (a few minutes)..."
+      HOMEBREW_NO_ENV_HINTS=1 "$BREW" install whisper-cpp ||
+        die "brew could not install whisper-cpp. Run '$BREW install whisper-cpp' in Terminal, fix what it says, then run this script again."
+      WHISPER="$("$BREW" --prefix)/bin/whisper-cli"
+      [ -x "$WHISPER" ] || die "brew installed whisper-cpp but $WHISPER is missing. Show this message to the developer."
+      warn "The whisper download failed, so Homebrew was used as a fallback and may have asked for your Mac password."
+    fi
   fi
 fi
 "$WHISPER" --help >/dev/null 2>&1 || warn "whisper-cli at $WHISPER did not start. Run 'brew reinstall whisper-cpp' or ask the developer."

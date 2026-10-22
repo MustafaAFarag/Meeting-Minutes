@@ -23,7 +23,7 @@ My Meetings page, and walks you through a 1-minute test.
 
 | OS | Needs |
 |---|---|
-| macOS | 14.2 or newer (older: your microphone only, not the other side), [Homebrew](https://brew.sh) |
+| macOS | 14.2 or newer (older: your microphone only, not the other side); Homebrew is only needed if the whisper download fails |
 | Windows | Windows 10 or 11, 64-bit |
 | Linux | 64-bit, PipeWire or PulseAudio (`pactl`, `parec`), libfuse2 for the AppImage |
 | All | [Claude Code](https://claude.com/claude-code), logged in. About 1 GB of free disk. Headphones are best: with speakers your microphone records the other side twice |

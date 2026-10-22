@@ -16,13 +16,15 @@ A build takes about 15 to 25 minutes the first time, about 8 to 12 once the cach
 
 Every file has a **fixed name** (no version in it). The setup scripts depend on these names, so do not rename them.
 
-| OS | App | CLI (`mn`) | Run page → Artifacts |
-|----|-----|------------|----------------------|
-| Mac | `MeetingNotes-macos.dmg` (universal) | `mn-macos` | `meeting-notes-macos` |
-| Windows | `MeetingNotes-windows-setup.exe` | `mn-windows.exe` | `meeting-notes-windows` |
-| Linux | `MeetingNotes-linux.AppImage` | `mn-linux` | `meeting-notes-linux` |
+| OS | App | CLI (`mn`) | Whisper (`whisper-cli`) | Run page → Artifacts |
+|----|-----|------------|-----------------------|----------------------|
+| Mac | `MeetingNotes-macos.dmg` (universal) | `mn-macos` | `whisper-cli-macos` | `meeting-notes-macos` |
+| Windows | `MeetingNotes-windows-setup.exe` | `mn-windows.exe` | — | `meeting-notes-windows` |
+| Linux | `MeetingNotes-linux.AppImage` | `mn-linux` | — | `meeting-notes-linux` |
 
-On a `v*` tag the same six files are attached to the published release (GitHub → Releases), and
+CI builds `whisper-cli-macos` from whisper.cpp tag `b5130` as one universal arm64 + x86_64 binary, with static libraries and embedded Metal shaders. CI checks both architectures, dynamic library dependencies, and a real transcription before publishing it.
+
+On a `v*` tag the same seven files are attached to the published release (GitHub → Releases), and
 `https://github.com/MustafaAFarag/Meeting-Minutes/releases/latest/download/<name>` serves them.
 Artifacts are kept 90 days.
 

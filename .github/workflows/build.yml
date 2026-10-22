@@ -86,6 +86,54 @@ jobs:
           chmod +x app/src-tauri/binaries/mn-audiotap-*
           file app/src-tauri/binaries/mn-audiotap-universal-apple-darwin
 
+      - name: Prepare whisper.cpp source (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          git clone --depth 1 --branch b5130 https://github.com/ggml-org/whisper.cpp whisper.cpp
+          mkdir -p whisper-cli-cache
+
+      # The tag and runner architecture identify this universal static binary.
+      - name: Cache whisper-cli (macOS)
+        id: whisper-cli-cache
+        if: runner.os == 'macOS'
+        uses: actions/cache@v4
+        with:
+          path: whisper-cli-cache/whisper-cli
+          key: whisper-b5130-${{ runner.arch }}
+
+      - name: Build whisper-cli (macOS)
+        if: runner.os == 'macOS' && steps.whisper-cli-cache.outputs.cache-hit != 'true'
+        run: |
+          cd whisper.cpp
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_SERVER=OFF
+          cmake --build build --config Release -j --target whisper-cli
+          cp build/bin/whisper-cli ../whisper-cli-cache/whisper-cli
+
+      - name: Verify whisper-cli (macOS)
+        if: runner.os == 'macOS'
+        working-directory: whisper.cpp
+        run: |
+          test -x ../whisper-cli-cache/whisper-cli
+          archs="$(lipo -archs ../whisper-cli-cache/whisper-cli)"
+          echo "Architectures: $archs"
+          case " $archs " in *" arm64 "*) ;; *) echo "Missing arm64 slice"; exit 1 ;; esac
+          case " $archs " in *" x86_64 "*) ;; *) echo "Missing x86_64 slice"; exit 1 ;; esac
+
+          dependencies="$(otool -L ../whisper-cli-cache/whisper-cli | tail -n +2 | awk '{print $1}')"
+          printf '%s\n' "$dependencies"
+          unexpected="$(printf '%s\n' "$dependencies" | grep -Ev '^(/usr/lib/|/System/)' || true)"
+          if [ -n "$unexpected" ]; then
+            echo "Unexpected non-system dynamic libraries:" >&2
+            echo "$unexpected" >&2
+            exit 1
+          fi
+
+          curl -fL --retry 3 --retry-delay 3 \
+            -o models/ggml-tiny.en.bin \
+            https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin
+          ../whisper-cli-cache/whisper-cli -m models/ggml-tiny.en.bin -f samples/jfk.wav -nt > /tmp/whisper-cli-macos-transcript.txt 2>&1
+          grep -qi "ask not" /tmp/whisper-cli-macos-transcript.txt
+
       # Makes icon.icns (and the rest of the set) from the 1024x1024 source.
       - name: Generate icons
         working-directory: app/src-tauri
@@ -117,6 +165,7 @@ jobs:
               cp ${{ matrix.bundle_glob }} out/MeetingNotes-macos.dmg
               (cd core && cargo build --release --target aarch64-apple-darwin && cargo build --release --target x86_64-apple-darwin)
               lipo -create -output out/mn-macos core/target/aarch64-apple-darwin/release/mn core/target/x86_64-apple-darwin/release/mn
+              cp whisper-cli-cache/whisper-cli out/whisper-cli-macos
               ;;
             windows)
               cp ${{ matrix.bundle_glob }} out/MeetingNotes-windows-setup.exe
