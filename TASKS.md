@@ -10,9 +10,9 @@ The pilot PM (Mac) uses it on 5 real meetings in 1 week. Each card is correct (r
 
 ## Checklist
 - [x] 0. Spike (results in `docs/spike-results.md`)
-- [ ] 1. Linux capture + transcribe CLI (`core/`, Rust): first pass reviewed, delta 1 in progress (adaptive silence, threads, garbage guard)
-- [ ] 2. Meeting-card prompt + JSON schema: done and tested (`prompts/`). Rust summarize module + Claude→Codex fallback + queue: next
-- [ ] 3. My Meetings artifact page (db: `meetings/<id>`, `transcripts/<id>`) + `scripts/push-meeting.sh`: in progress (subagent)
+- [x] 1. Linux capture + transcribe CLI (`core/`, Rust): parec two-track capture, adaptive silence auto-stop, whisper.cpp, audio deletion. Tested live on Arch
+- [x] 2. Card prompt + schema, `mn summarize` (Claude → Codex fallback), `mn publish` (pending-marker queue), `mn process`, `mn run`. Tested end to end with real Claude, Codex and a real artifact
+- [x] 3. My Meetings artifact page: full-width master-detail layout, ctcHealth brand, ticks in db. The user confirmed ticks persist
 - [ ] 4. Tauri tray widget + 9:00 notification (Linux first)
 - [ ] 5. Mac capture sidecar (Swift) + GitHub Actions release (.dmg, AppImage)
 - [ ] 6. Repo CLAUDE.md + `setup` skill for beginner PMs
@@ -27,6 +27,11 @@ The pilot PM (Mac) uses it on 5 real meetings in 1 week. Each card is correct (r
 - Whisper: VAD stays off by default because it dropped real speech in the test. Threads are set to all cores; that runs about 5.5× real time on this CPU.
 - Card generation: `claude -p --json-schema` / `codex exec --output-schema`. Both take about 40 s. Claude+M365 matched the calendar event and found real links.
 - The repo is public: never commit real cards or transcripts. Keep them in `.local-samples/` (git-ignored).
+
+- Page data is published as files (`data/index.json`, `data/meetings/<id>.json`, `data/transcripts/<id>.md`), because headless ArtifactData writes need an interactive consent that no allow rule bypasses. The db holds only ticks, written by the viewer in the browser.
+- Capture uses `parec`, not `pw-record`: WirePlumber routed both pw-record streams to the sink monitor even with `--target`.
+- Whisper model per machine: small on the Arch CPU (about 3× real time), large-v3-turbo planned for the Mac (GPU; speed not measured yet).
+- Timing: summarizing takes about 40–60 s, publishing about 30–40 s.
 
 ## Blockers / open
 - Using speakers instead of headphones means the mic re-records the other side, so lines get duplicated. v1 says "use headphones"; dedup is a later task.
