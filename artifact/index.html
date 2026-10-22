@@ -174,6 +174,21 @@ a { color: var(--ctl); text-underline-offset: 2px; }
 .dc table { font-size: 13.5px; }
 .dc th, .dc td { padding: 4px 12px 4px 0; }
 .row3 { display: flex; gap: 8px 28px; flex-wrap: wrap; align-items: flex-start; }
+
+.ask { display: flex; flex-direction: column; gap: 10px; }
+.ask .btns, .ask .seg { margin: 0; }
+.ask .seg { align-self: flex-start; }
+.ask-row { display: flex; gap: 8px; }
+.ask-row input { flex: 1; min-width: 0; border: 0; background: var(--inset); color: var(--fg); border-radius: 8px; padding: 8px 12px; font: inherit; }
+.ask-row input::placeholder { color: var(--muted); }
+.ask-out { background: var(--inset); border-radius: 12px; padding: 10px 14px; color: var(--body); overflow-wrap: anywhere; max-height: 60vh; overflow-y: auto; }
+.ask-out p, .ask-out ul, .ask-out ol, .ask-out .table-wrap { margin: 0 0 8px; }
+.ask-out ul, .ask-out ol { padding-left: 20px; }
+.ask-out > :last-child { margin-bottom: 0; }
+.ask-out .mh { font: 600 15px/1.3 var(--font-display); color: var(--fg); margin: 10px 0 4px; }
+.ask-out .mh.h3 { font-size: 14px; font-weight: 500; }
+.ask-out > .mh:first-child { margin-top: 0; }
+.btn:disabled { opacity: .5; cursor: default; text-decoration: none; }
 </style>
 
 <div class="banner" aria-hidden="true"><i style="background:#32737b"></i><i style="background:#f9dc5c"></i><i style="background:#dafeb7"></i><i style="background:#f96d10"></i></div>
@@ -332,7 +347,7 @@ a { color: var(--ctl); text-underline-offset: 2px; }
       (h.chips ? '<div class="chips">' + h.chips + "</div>" : "") + '</div><span class="chev" aria-hidden="true">\u25B6</span></button>';
     if (!open) return out + "</article>";
     var p = parts(m);
-    return out + '<div class="body">' + (canWrite ? titleHtml(m, "") : "") + p.summary + p.decisions + p.deliv + p.todos + p.waits + p.links + p.people + p.btns + "</div></article>";
+    return out + '<div class="body">' + (canWrite ? titleHtml(m, "") : "") + p.summary + p.decisions + p.deliv + p.todos + p.waits + p.links + p.people + p.btns + askHtml(m) + "</div></article>";
   }
 
   /* wide screens: compact row on the left, full detail on the right */
@@ -361,12 +376,18 @@ a { color: var(--ctl); text-underline-offset: 2px; }
       '<div class="dgrid"><div class="col">' + (p.summary ? '<div class="dc">' + p.summary + "</div>" : "") + (p.decisions ? '<div class="dc">' + p.decisions + "</div>" : "") + "</div>" +
       '<div class="col">' + (p.todos ? '<div class="dc">' + p.todos + "</div>" : "") + (p.waits ? '<div class="dc">' + p.waits + "</div>" : "") + "</div>" +
       (p.deliv ? '<div class="dc full">' + p.deliv + "</div>" : "") +
-      '<div class="dc full"><div class="row3">' + p.links + p.people + "</div>" + p.btns + "</div></div>";
+      '<div class="dc full"><div class="row3">' + p.links + p.people + "</div>" + p.btns + "</div>" +
+      (askHtml(m) ? '<div class="dc full">' + askHtml(m) + "</div>" : "") + "</div>";
   }
 
   /* ---------- render ---------- */
   function render() {
+    var ae = document.activeElement, keep = ae && ae.dataset && ae.dataset.askInput ? { id: ae.dataset.askInput, a: ae.selectionStart, b: ae.selectionEnd } : null;
     renderPage();
+    if (keep) {                       // a re-render replaces the Ask Claude field, so put the focus and the cursor back
+      var ai = Array.prototype.filter.call(document.querySelectorAll("[data-ask-input]"), function (x) { return x.dataset.askInput === keep.id; })[0];
+      if (ai) { ai.focus(); try { ai.setSelectionRange(keep.a, keep.b); } catch (e) {} }
+    }
     // Re-rendering replaces the rename field, so put the typed text and the cursor back.
     var inp = editing && document.getElementById("rename-input");
     if (inp && document.activeElement !== inp) { inp.value = editDraft; inp.focus(); inp.setSelectionRange(editDraft.length, editDraft.length); }
@@ -506,6 +527,349 @@ a { color: var(--ctl); text-underline-offset: 2px; }
     });
   }
 
+  /* ---------- Ask Claude ---------- */
+  var sample = null, limitsP = null, docxP = null;     // sample stays null (block hidden) when the platform has no sample, or the viewer said no
+  var asks = new Map();                                // meeting id -> {scope, draft, busy, ctrl, out, kind, label, last, truncated}
+  var DOCX_URL = "https://cdn.jsdelivr.net/npm/docx@9.8.1/dist/index.iife.js";
+  var MONTHS_FULL = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+  var INSTR = "You help a project manager at CTC Health with their meetings. Answer in English. Be plain and concise. Use only facts from the data below. Write \"TBC\" when an owner or date is unknown. Never invent names.";
+  var MD_NOTE = " Format: simple Markdown only (# and ## headings, - bullets, 1. numbered lists, **bold**, | pipe | tables |). No HTML.";
+  var TASKS = {
+    email: "Write a short email to the attendees: greeting, summary, decisions, action items with owners and dates, sign-off.",
+    status: "Write a 5-bullet status update for a manager: progress, decisions, risks/blockers, next steps, asks."
+  };
+  var LABELS = { email: "Email recap", status: "Status update" };
+  function askState(id) { var s = asks.get(id); if (!s) { s = { scope: "this", draft: "", busy: false, ctrl: null, out: "", kind: "", label: "", last: null, truncated: false }; asks.set(id, s); } return s; }
+  function pad2(n) { return String(n).padStart(2, "0"); }
+  function bytes(s) { return window.TextEncoder ? new TextEncoder().encode(s).length : String(s).length * 3; }
+  function dateLine(d) { var h = d.getHours(); return d.getDate() + " " + MONTHS_FULL[d.getMonth()] + " " + d.getFullYear() + "  |  " + (h % 12 || 12) + ":" + pad2(d.getMinutes()) + " " + (h >= 12 ? "PM" : "AM"); }
+  function fileDate(d) { return pad2(d.getDate()) + "-" + pad2(d.getMonth() + 1) + "-" + d.getFullYear(); }
+  function fileSafe(s) { return String(s || "").replace(/[\\/:*?"<>|\u0000-\u001f]+/g, "").replace(/\s+/g, " ").trim().slice(0, 80).replace(/[. ]+$/, ""); }
+  function startOf(m) { var d = m && m.started_at ? new Date(m.started_at) : null; return d && !isNaN(d) ? d : null; }
+
+  /* markdown: parse to blocks once, then draw it as safe HTML or as docx. Text is always escaped before any tag is added. */
+  function parseMd(src) {
+    var lines = String(src || "").replace(/\r/g, "").split("\n"), out = [], para = [], i = 0, m;
+    function flush() { if (para.length) { out.push({ t: "p", text: para.join(" ") }); para = []; } }
+    function cells(l) { l = l.trim(); if (l.charAt(0) === "|") l = l.slice(1); if (l.charAt(l.length - 1) === "|") l = l.slice(0, -1); return l.split("|").map(function (c) { return c.trim(); }); }
+    function isSep(l) { l = (l || "").trim(); return l.indexOf("-") !== -1 && l.indexOf("|") !== -1 && /^[\s:|-]+$/.test(l); }
+    while (i < lines.length) {
+      var t = lines[i].trim();
+      if (!t) { flush(); i++; continue; }
+      if ((m = /^(#{1,6})\s+(.*?)\s*#*$/.exec(t))) { flush(); out.push({ t: "h", n: m[1].length, text: m[2] }); i++; continue; }
+      if (/^([-*_])(\s*\1){2,}$/.test(t)) { flush(); i++; continue; }
+      if (t.charAt(0) === "|" && isSep(lines[i + 1])) {
+        flush();
+        var head = cells(t), rows = []; i += 2;
+        while (i < lines.length && lines[i].trim().charAt(0) === "|") {
+          var r = cells(lines[i]); while (r.length < head.length) r.push(""); rows.push(r.slice(0, head.length)); i++;
+        }
+        out.push({ t: "table", head: head, rows: rows }); continue;
+      }
+      var bm = /^[-*•]\s+(.*)$/.exec(t), nm = /^(\d+)[.)]\s+(.*)$/.exec(t);
+      if (bm || nm) {
+        flush();
+        var ord = !!nm, blk = { t: ord ? "ol" : "ul", items: [], start: ord ? +nm[1] : 1 };
+        while (i < lines.length) {
+          var ln = lines[i], tt = ln.trim(), b2 = /^[-*•]\s+(.*)$/.exec(tt), n2 = /^\d+[.)]\s+(.*)$/.exec(tt);
+          if (!tt) break;
+          if (ord ? n2 : b2) blk.items.push((ord ? n2 : b2)[1]);
+          else if (/^\s/.test(ln) && !b2 && !n2 && blk.items.length) blk.items[blk.items.length - 1] += " " + tt;
+          else break;
+          i++;
+        }
+        out.push(blk); continue;
+      }
+      para.push(t); i++;
+    }
+    flush();
+    return out;
+  }
+  function mdInline(s) { return esc(s).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>"); }
+  function mdHtml(blocks) {
+    return blocks.map(function (b) {
+      if (b.t === "h") return '<div class="mh h' + Math.min(b.n, 3) + '">' + mdInline(b.text) + "</div>";
+      if (b.t === "p") return "<p>" + mdInline(b.text) + "</p>";
+      if (b.t === "ul") return "<ul>" + b.items.map(function (x) { return "<li>" + mdInline(x) + "</li>"; }).join("") + "</ul>";
+      if (b.t === "ol") return '<ol start="' + b.start + '">' + b.items.map(function (x) { return "<li>" + mdInline(x) + "</li>"; }).join("") + "</ol>";
+      return '<div class="table-wrap"><table><thead><tr>' + b.head.map(function (c) { return "<th>" + mdInline(c) + "</th>"; }).join("") + "</tr></thead><tbody>" +
+        b.rows.map(function (r) { return "<tr>" + r.map(function (c) { return "<td>" + mdInline(c) + "</td>"; }).join("") + "</tr>"; }).join("") + "</tbody></table></div>";
+    }).join("");
+  }
+
+  /* what Claude gets: card text, transcript, size budget */
+  function cardText(m) {
+    var L = [], s = startOf(m), e = m.ended_at ? new Date(m.ended_at) : null;
+    function list(label, a, fn) { if (a && a.length) { L.push(label + ":"); a.forEach(function (x) { L.push("- " + fn(x)); }); } }
+    L.push("Title: " + titleOf(m));
+    if (m.client) L.push("Client: " + m.client);
+    if (m.project) L.push("Project: " + m.project);
+    if ((m.attendees || []).length) L.push("Attendees: " + m.attendees.join(", "));
+    if (s) L.push("Started: " + m.started_at + " (" + dateLine(s) + ")");
+    if (e && !isNaN(e)) L.push("Ended: " + m.ended_at);
+    list("Summary", m.summary, String);
+    list("Decisions", m.decisions, String);
+    list("Deliverables", m.deliverables, function (d) { return d.what + " | owner: " + (d.owner || "TBC") + " | due: " + (d.due || "TBC") + " | status: " + (d.status || "TBC"); });
+    list("My to-dos (the project manager's own)", m.my_todos, function (t) { return t.text + " | due: " + (t.due || "TBC"); });
+    list("Waiting on others", m.waiting_on, function (t) { return (t.who || "TBC") + ": " + t.text + " | due: " + (t.due || "TBC"); });
+    list("Related links", m.related_links, function (l) { return (l.title || "") + " " + (l.url || ""); });
+    return L.join("\n");
+  }
+  function cutMiddle(text, max) {
+    var total = bytes(text); if (total <= max) return { text: text, cut: false };
+    if (max < 500) return { text: "", cut: true };
+    var keep = Math.floor(text.length * max / total * .95), r;
+    for (;;) {
+      var a = Math.floor(keep / 2); r = text.slice(0, a) + "\n[... middle of the transcript omitted ...]\n" + text.slice(text.length - (keep - a));
+      if (bytes(r) <= max || keep < 200) break; keep = Math.floor(keep * .9);
+    }
+    return { text: r, cut: true };
+  }
+  function getLimits() {
+    if (!limitsP) limitsP = Promise.resolve().then(function () { return sample.limits(); }).catch(function () { return null; });
+    return limitsP;
+  }
+  function compose(task, data, note) {
+    return INSTR + "\n\nToday is " + dateLine(new Date()).split("  |  ")[0] + ".\n\nTASK\n" + task + (note ? "\n\nNOTE\n" + note : "") + "\n\nDATA\n" + data;
+  }
+  function buildInput(m, scope, task) {
+    return getLimits().then(function (lim) {
+      var room = ((lim && lim.maxInputBytes) || 150000) - 8192 - bytes(task) - 600;     // 8 KB kept for the instructions
+      if (scope === "all") {
+        var list = sortedMeetings(false), chunks = [], used = 0, left = 0;
+        for (var i = 0; i < list.length; i++) {
+          var c = "=== Meeting " + (i + 1) + " ===\n" + cardText(list[i]), b = bytes(c) + 2;
+          if (used + b > room) { left = list.length - i; break; }
+          chunks.push(c); used += b;
+        }
+        return compose(task, chunks.join("\n\n") || "No meetings.", "These are all " + list.length + " active meetings, newest first, without transcripts." + (left ? " The " + left + " oldest were left out to fit the size limit." : ""));
+      }
+      return loadTranscript(m.id).then(function () {
+        var card = cardText(m), tr = trText.get(m.id), note = "", data = card;
+        if (tr) {
+          tr = tr.split(/\r?\n/).filter(function (l) { return l.trim() && !/^#|^<!--/.test(l.trim()); }).join("\n");
+          var c = cutMiddle(tr, room - bytes(card));
+          if (c.cut) note = "The transcript was cut in the middle to fit the size limit.";
+          data += "\n\nTranscript (Me = the project manager, Them = the other people on the call):\n" + c.text;
+        } else note = "No transcript is available for this meeting.";
+        return compose(task, data, note);
+      });
+    });
+  }
+  function minutesTask(m) {
+    var s = startOf(m);
+    return "Write formal meeting minutes. Reply with JSON only, no other text, exactly this shape:\n" +
+      '{ "client": string, "meeting_name": string, "date_line": "22 October 2026  |  2:05 PM", "executive_summary": string (3 to 5 sentences), "attendees": [{"org": string, "names": [string]}], "discussion": [{"heading": string, "points": [string]}] (2 to 5 sections, 1 to 4 points each), "actions": [{"action": string, "owner": string, "due": string}] }\n' +
+      "Rules: client is \"" + (m.client || "") + "\" (empty if none). meeting_name is \"" + titleOf(m) + "\". date_line must be exactly \"" + (s ? dateLine(s) : "TBC") + "\". " +
+      "The project manager works at CTC Health, so people from CTC Health go in their own attendee group with org \"CTC Health\"; group everyone else by their company. List only people named in the data. " +
+      "Every action needs an owner and a due date; write \"TBC\" when unknown. Write dates like 5 November 2026.";
+  }
+
+  /* docx, house format. The library loads on the first Word download only. */
+  function loadDocx() {
+    if (window.docx) return Promise.resolve(window.docx);
+    if (!docxP) docxP = new Promise(function (res, rej) {
+      var s = document.createElement("script"); s.src = DOCX_URL;
+      s.onload = function () { if (window.docx) res(window.docx); else { docxP = null; rej(new Error("docx missing")); } };
+      s.onerror = function () { docxP = null; rej(new Error("docx load")); };
+      document.head.appendChild(s);
+    });
+    return docxP;
+  }
+  function houseKit(d) {
+    var F = "Calibri", NAVY = "1F3864", BLUE = "2E74B5", GREY = "BFBFBF", TOTAL = 10206, nums = [];   // TOTAL = A4 width 11906 minus 2 x 850 margins
+    function run(text, o) { o = o || {}; var r = { text: text, font: F, size: o.size || 16 }; if (o.bold) r.bold = true; if (o.color) r.color = o.color; return new d.TextRun(r); }
+    function runs(text, o) {
+      var out = []; String(text == null ? "" : text).split(/\*\*(.+?)\*\*/).forEach(function (s, i) { if (s) out.push(run(s, Object.assign({}, o, i % 2 ? { bold: true } : {}))); });
+      return out.length ? out : [run("", o)];
+    }
+    function para(children, o) { return new d.Paragraph(Object.assign({ children: children }, o)); }
+    var AL = d.AlignmentType, SP = { before: 25, after: 25 };
+    var k = {
+      run: run, para: para,
+      headline: function (text) { return para([run(text, { size: 26, bold: true, color: NAVY })], { alignment: AL.CENTER, spacing: { after: 40 } }); },
+      subtitle: function (text) { return para([run(text, { size: 21, bold: true, color: BLUE })], { alignment: AL.CENTER }); },
+      dateLine: function (text) { return para([run(text, { size: 17, color: "555555" })], { alignment: AL.CENTER }); },
+      rule: function () { return para([], { border: { bottom: { style: d.BorderStyle.SINGLE, color: BLUE, size: 4, space: 1 } } }); },
+      band: function (text) { return para([run(String(text).toUpperCase(), { size: 18, bold: true, color: "FFFFFF" })], { shading: { type: d.ShadingType.CLEAR, fill: NAVY, color: "auto" }, indent: { left: 80 }, spacing: { before: 70, after: 30 }, keepNext: true }); },
+      body: function (text) { return para(runs(text, { size: 16 }), { spacing: SP }); },
+      sub: function (text) { return para(runs(text, { size: 17, bold: true }), { spacing: SP, keepNext: true }); },
+      bullet: function (text) { return para(runs(text, { size: 16 }), { numbering: { reference: "mm-bullets", level: 0 }, spacing: SP }); },
+      numbered: function (items, start) {
+        var ref = "mm-num-" + nums.length;
+        nums.push({ reference: ref, levels: [{ level: 0, format: d.LevelFormat.DECIMAL, text: "%1.", alignment: AL.LEFT, start: start || 1, style: { paragraph: { indent: { left: 360, hanging: 260 } }, run: { font: F, size: 16 } } }] });
+        return items.map(function (t) { return para(runs(t, { size: 16 }), { numbering: { reference: ref, level: 0 }, spacing: SP }); });
+      },
+      table: function (head, rows, pct) {
+        var w = pct.map(function (p) { return Math.round(TOTAL * p / 100); });
+        w[w.length - 1] += TOTAL - w.reduce(function (a, b) { return a + b; }, 0);
+        var line = { style: d.BorderStyle.SINGLE, size: 4, color: GREY };
+        function cell(text, i, fill, o) {
+          return new d.TableCell({ width: { size: w[i], type: d.WidthType.DXA }, shading: { type: d.ShadingType.CLEAR, fill: fill, color: "auto" }, margins: { top: 30, bottom: 30, left: 80, right: 80 },
+            children: [para(runs(text, Object.assign({ size: 16 }, o)), { spacing: { before: 20, after: 20 } })] });
+        }
+        var all = [new d.TableRow({ tableHeader: true, children: head.map(function (h, i) { return cell(h, i, NAVY, { bold: true, color: "FFFFFF" }); }) })]
+          .concat(rows.map(function (r, n) { return new d.TableRow({ children: r.map(function (c, i) { return cell(c, i, n % 2 ? "FFFFFF" : "F2F2F2"); }) }); }));
+        return [new d.Table({ width: { size: TOTAL, type: d.WidthType.DXA }, columnWidths: w, layout: d.TableLayoutType.FIXED,
+          borders: { top: line, bottom: line, left: line, right: line, insideHorizontal: line, insideVertical: line }, rows: all }), para([])];
+      },
+      header: function (headline, client, name, date) {
+        return [k.headline(headline), k.subtitle(client ? client + " × CTC Health – " + name : name), k.dateLine(date), k.rule()];
+      },
+      doc: function (title, children) {
+        var bullets = { reference: "mm-bullets", levels: [{ level: 0, format: d.LevelFormat.BULLET, text: "•", alignment: AL.LEFT, style: { paragraph: { indent: { left: 360, hanging: 220 } }, run: { font: F } } }] };
+        return new d.Document({ creator: "CTC Health", title: title, styles: { default: { document: { run: { font: F, size: 16 } } } }, numbering: { config: [bullets].concat(nums) },
+          sections: [{ properties: { page: { size: { width: 11906, height: 16838 }, margin: { top: 600, bottom: 600, left: 850, right: 850 } } }, children: children }] });
+      }
+    };
+    return k;
+  }
+  function minutesDoc(d, j) {
+    var k = houseKit(d), c = k.header("MEETING MINUTES", j.client, j.meeting_name, j.date_line);
+    c.push(k.band("Executive summary"), k.body(j.executive_summary || "TBC"));
+    c.push(k.band("Attendees"));
+    if (!j.attendees.length) c.push(k.body("TBC"));
+    j.attendees.forEach(function (a) { c.push(k.para(a.org ? [k.run(a.org + ":", { bold: true }), k.run(" " + (a.names.join(", ") || "TBC"))] : [k.run(a.names.join(", "))], { spacing: { before: 25, after: 25 } })); });
+    c.push(k.band("Key discussion points"));
+    j.discussion.forEach(function (s, i) { c.push(k.sub((i + 1) + ". " + s.heading)); s.points.forEach(function (p) { c.push(k.bullet(p)); }); });
+    c.push(k.band("Action items"));
+    var rows = j.actions.map(function (a, i) { return [String(i + 1), a.action, a.owner, a.due]; });
+    if (!rows.length) rows = [["1", "No actions recorded", "TBC", "TBC"]];
+    k.table(["#", "Action Item", "Owner", "Due"], rows, [5, 55, 25, 15]).forEach(function (x) { c.push(x); });
+    return k.doc("Meeting minutes", c);
+  }
+  function normMinutes(j) {
+    function s(x) { return x == null ? "" : String(x).trim(); }
+    function a(x) { return Array.isArray(x) ? x : []; }
+    j = j && typeof j === "object" ? j : {};
+    return { client: s(j.client), meeting_name: s(j.meeting_name), date_line: s(j.date_line), executive_summary: s(j.executive_summary),
+      attendees: a(j.attendees).map(function (x) { x = x || {}; return { org: s(x.org), names: a(x.names).map(s).filter(Boolean) }; }).filter(function (x) { return x.org || x.names.length; }),
+      discussion: a(j.discussion).map(function (x) { x = x || {}; return { heading: s(x.heading), points: a(x.points).map(s).filter(Boolean) }; }).filter(function (x) { return x.heading || x.points.length; }),
+      actions: a(j.actions).map(function (x) { x = x || {}; return { action: s(x.action), owner: s(x.owner) || "TBC", due: s(x.due) || "TBC" }; }).filter(function (x) { return x.action; }) };
+  }
+  function freeDoc(d, blocks, head) {
+    var k = houseKit(d), c = k.header("MEETING REPORT", head.client, head.name, head.date);
+    blocks.forEach(function (b) {
+      if (b.t === "h") c.push(b.n <= 2 ? k.band(b.text) : k.sub(b.text));
+      else if (b.t === "p") c.push(k.body(b.text));
+      else if (b.t === "ul") b.items.forEach(function (x) { c.push(k.bullet(x)); });
+      else if (b.t === "ol") k.numbered(b.items, b.start).forEach(function (x) { c.push(x); });
+      else {
+        var n = b.head.length, pct = b.head[0] === "#" && n > 1 ? [5].concat(b.head.slice(1).map(function () { return 95 / (n - 1); })) : b.head.map(function () { return 100 / n; });
+        k.table(b.head, b.rows, pct).forEach(function (x) { c.push(x); });
+      }
+    });
+    return k.doc("Meeting report", c);
+  }
+  function saveDocx(build, filename, okMsg) {
+    return loadDocx().then(function (d) { return d.Packer.toBlob(build(d)); })
+      .then(function (blob) { return downloads.save({ filename: filename, data: blob }); })
+      .then(function () { toast(okMsg); })
+      .catch(function (e) { if (e && e.code === "declined") return; toast("Could not save the Word file. Try again."); });
+  }
+
+  /* running a request */
+  function askFail(e) {
+    var c = e && e.code;
+    if (c === "not_granted") { sample = null; render(); }
+    else if (c === "rate_limited") toast("Claude is busy. Try again in a minute.");
+    else toast("Claude could not answer. Try again.");
+  }
+  function outHtml(st) {
+    var h = st.out ? mdHtml(parseMd(st.out)) : "";
+    if (st.busy && !st.out) h = '<p class="meta">Claude is working...</p>';
+    if (st.truncated && !st.busy) h += '<p class="meta">The answer was cut short.</p>';
+    return h;
+  }
+  function askPaint(id) {
+    var st = askState(id);
+    Array.prototype.forEach.call(document.querySelectorAll("[data-ask-out]"), function (el) { if (el.dataset.askOut === id) { el.hidden = false; el.innerHTML = outHtml(st); } });
+  }
+  function askRun(id, kind, request) {
+    var m = meetings.get(id), st = askState(id);
+    if (!m || !sample || st.busy) return;
+    var scope = st.scope, task = kind === "minutes" ? minutesTask(m) : kind === "free" ? "Request: " + request + "\n" + MD_NOTE.trim() : TASKS[kind] + MD_NOTE;
+    if (kind === "minutes" && scope === "all") scope = "this";
+    var ctrl = new AbortController();
+    st.busy = true; st.ctrl = ctrl; st.out = ""; st.kind = kind === "minutes" ? "minutes" : "free"; st.truncated = false;
+    st.label = (kind === "minutes" ? "Meeting minutes" : request) + " (" + (scope === "all" ? "all meetings" : "this meeting") + ")";
+    st.last = { scope: scope, request: kind === "free" ? request : LABELS[kind] || "Minutes" };
+    render();
+    function done() { st.busy = false; st.ctrl = null; render(); }
+    buildInput(m, scope, task).then(function (input) {
+      if (ctrl.signal.aborted) return;
+      if (kind === "minutes") {
+        return sample.json(input, { modelTier: "default", signal: ctrl.signal }).then(function (j) {
+          if (ctrl.signal.aborted) return;
+          j = normMinutes(j);
+          var s = startOf(m), file = fileDate(s || new Date()) + "_" + (fileSafe(m.client) || "Meeting") + "_Meeting mins.docx";
+          return saveDocx(function (d) { return minutesDoc(d, j); }, file, "Minutes saved.");
+        });
+      }
+      return sample(input, { onText: function (o) { st.out = (o && o.text) || ""; askPaint(id); }, signal: ctrl.signal }).then(function (res) {
+        if (res && typeof res.text === "string") st.out = res.text;
+        st.truncated = !!(res && res.truncated);
+      });
+    }).catch(function (e) {
+      if (ctrl.signal.aborted) return;                 // Stop was pressed: keep what arrived, say nothing
+      st.out = ""; askFail(e);
+    }).then(done);
+  }
+  function askSend(id) {
+    var st = askState(id), q = st.draft.trim(); if (!q || st.busy) return;
+    st.draft = ""; askRun(id, "free", q);
+  }
+  function askFile(id, ext) {
+    var m = meetings.get(id), st = askState(id), last = st.last || {}, s = last.scope === "all" ? null : startOf(m);
+    var words = fileSafe(String(last.request || "").split(/\s+/).slice(0, 4).join(" ")) || "Answer";
+    return fileDate(s || new Date()) + "_" + (last.scope === "all" ? "All meetings" : fileSafe(m && m.client) || "Meeting") + "_" + words + "." + ext;
+  }
+  function askCopy(text) {
+    function fallback() {
+      var ta = document.createElement("textarea"); ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0"; document.body.appendChild(ta); ta.select();
+      var ok = false; try { ok = document.execCommand("copy"); } catch (e) {} ta.remove(); toast(ok ? "Copied." : "Could not copy.");
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(function () { toast("Copied."); }, fallback); else fallback();
+  }
+  function askAction(act, id) {
+    var m = meetings.get(id), st = askState(id);
+    if (!m) return;
+    if (act === "minutes" || act === "email" || act === "status") askRun(id, act, "");
+    else if (act === "send") askSend(id);
+    else if (act === "stop") { if (st.ctrl) st.ctrl.abort(); }
+    else if (act === "scope-this" || act === "scope-all") { st.scope = act === "scope-all" ? "all" : "this"; render(); }
+    else if (act === "copy") askCopy(st.out);
+    else if (act === "md") downloads.save({ filename: askFile(id, "md"), data: st.out }).then(function () { toast("Markdown saved."); }).catch(function (e) { if (e && e.code !== "declined") toast("Could not save the file."); });
+    else if (act === "docx") {
+      var s = st.last && st.last.scope === "all" ? null : startOf(m), all = st.last && st.last.scope === "all";
+      var head = { client: all ? "" : m.client || "", name: all ? "All meetings" : titleOf(m), date: dateLine(s || new Date()) };
+      saveDocx(function (d) { return freeDoc(d, parseMd(st.out), head); }, askFile(id, "docx"), "Word file saved.");
+    }
+  }
+  function askHtml(m) {
+    if (!sample) return "";
+    var st = askState(m.id), id = esc(m.id), dis = st.busy ? " disabled" : "";
+    function b(act, label, cls) { return '<button class="btn' + (cls ? " " + cls : "") + '" data-ask="' + act + '" data-aid="' + id + '"' + dis + ">" + label + "</button>"; }
+    var out = outHtml(st), done = !st.busy && st.out && st.kind === "free";
+    return '<div class="sec ask"><h4>Ask Claude</h4>' +
+      '<div class="btns">' + (downloads ? b("minutes", "Meeting minutes (.docx)", "fill") : "") + b("email", "Email recap") + b("status", "Status update") + "</div>" +
+      '<div class="ask-row"><input type="text" data-ask-input="' + id + '" value="' + esc(st.draft) + '" placeholder="Ask Claude about this meeting, or ask for a report…" aria-label="Ask Claude" autocomplete="off">' + b("send", "Send", "fill") + "</div>" +
+      '<div class="seg" role="group" aria-label="What Claude looks at">' + [["this", "This meeting"], ["all", "All meetings"]].map(function (x) {
+        return '<button data-ask="scope-' + x[0] + '" data-aid="' + id + '" aria-pressed="' + (st.scope === x[0]) + '">' + x[1] + "</button>"; }).join("") + "</div>" +
+      (st.label && (st.busy || st.out) ? '<div class="meta">' + esc(st.label) + "</div>" : "") +
+      '<div class="ask-out" data-ask-out="' + id + '" aria-live="polite"' + (out ? "" : " hidden") + ">" + out + "</div>" +
+      (st.busy ? '<div class="btns"><button class="btn" data-ask="stop" data-aid="' + id + '">Stop</button></div>' :
+        done ? '<div class="btns"><button class="btn" data-ask="copy" data-aid="' + id + '">Copy</button>' + (downloads ? '<button class="btn" data-ask="docx" data-aid="' + id + '">Download .docx</button><button class="btn" data-ask="md" data-aid="' + id + '">Download .md</button>' : "") + "</div>" : "") +
+      "</div>";
+  }
+  document.addEventListener("click", function (ev) {
+    var el = ev.target.closest("[data-ask]"); if (el) askAction(el.dataset.ask, el.dataset.aid);
+  });
+  document.addEventListener("input", function (ev) { if (ev.target.dataset && ev.target.dataset.askInput) askState(ev.target.dataset.askInput).draft = ev.target.value; });
+  document.addEventListener("keydown", function (ev) {
+    if (ev.key === "Enter" && ev.target.dataset && ev.target.dataset.askInput) { ev.preventDefault(); askSend(ev.target.dataset.askInput); }
+  });
+
   document.addEventListener("click", function (ev) {
     if (ev.target.closest("[data-rename]")) return;
     var pen = ev.target.closest("[data-pen]"); if (pen) { startRename(pen.dataset.pen); return; }
@@ -571,6 +935,7 @@ a { color: var(--ctl); text-underline-offset: 2px; }
   document.addEventListener("visibilitychange", function () { if (document.visibilityState === "visible") refresh(); });
 
   (window.claude ? window.claude.use("downloads") : Promise.resolve(null)).then(function (d) { downloads = d; render(); }, function () {});
+  (window.claude ? window.claude.use("sample") : Promise.resolve(null)).then(function (s) { sample = typeof s === "function" ? s : null; render(); }, function () {});
   (window.claude ? window.claude.use("user") : Promise.resolve(null)).then(function (u) {
     if (u && u.can && u.can("data.write") === false) { canWrite = false; render(); }
   }, function () {});

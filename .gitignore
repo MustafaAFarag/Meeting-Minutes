@@ -12,3 +12,4 @@ docs/*.pdf
 app/src-tauri/target
 app/src-tauri/gen
 app/src-tauri/binaries/
+artifact/.test/
