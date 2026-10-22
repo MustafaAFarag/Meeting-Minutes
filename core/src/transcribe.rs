@@ -1,7 +1,6 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::DateTime;
@@ -9,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::capture::Track;
 use crate::config::Config;
+use crate::exec::command;
 use crate::levels::wav_peak_db;
 use crate::session::SessionInfo;
 use crate::status::Status;
@@ -226,7 +226,7 @@ fn run_whisper(
     track: Track,
     wav: &Path,
 ) -> Result<Vec<Segment>> {
-    let mut cmd = Command::new(&cfg.whisper_cli);
+    let mut cmd = command(&cfg.whisper_cli);
     cmd.arg("-m")
         .arg(model)
         .arg("-f")

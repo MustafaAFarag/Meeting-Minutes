@@ -1,12 +1,19 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use mn_core::config::{default_capture_me, default_capture_them, Config};
+use mn_core::config::{
+    audiotap_argv, default_capture_me, default_capture_them, native_capture_argv, Config,
+};
 
 #[test]
 fn empty_file_gives_defaults() {
     let cfg = Config::parse("").unwrap();
     assert_eq!(cfg, Config::default());
-    assert_eq!(cfg.whisper_cli, PathBuf::from("whisper-cli"));
+    let whisper = if cfg!(windows) {
+        "whisper-cli.exe"
+    } else {
+        "whisper-cli"
+    };
+    assert_eq!(cfg.whisper_cli, PathBuf::from(whisper));
     assert!(cfg.notes_dir.ends_with("MeetingNotes"));
     assert!(cfg.whisper_model.is_none());
     assert!(cfg.capture_me.is_none(), "computed at runtime");
@@ -41,6 +48,48 @@ fn default_capture_commands_use_parec_with_an_explicit_device() {
             "--latency-msec=100"
         ]
     );
+}
+
+#[test]
+fn native_capture_default_runs_this_executable() {
+    assert_eq!(
+        native_capture_argv(Path::new("/app/mn"), "mic"),
+        ["/app/mn", "capture", "mic"]
+    );
+    assert_eq!(
+        native_capture_argv(Path::new("/app/widget"), "system"),
+        ["/app/widget", "capture", "system"]
+    );
+}
+
+#[test]
+fn mac_system_audio_default_is_the_helper_next_to_the_executable() {
+    let dir = Path::new("Meeting Notes.app")
+        .join("Contents")
+        .join("MacOS");
+    let expected = dir.join("mn-audiotap");
+    assert_eq!(
+        audiotap_argv(&dir.join("widget")),
+        [expected.to_str().unwrap()]
+    );
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+#[test]
+fn linux_config_comments_name_the_pactl_queries() {
+    use mn_core::capture::Track;
+
+    let cfg = Config::default();
+    assert_eq!(
+        cfg.capture_comment(Track::Me).unwrap(),
+        "# capture_me: computed at runtime from `pactl get-default-source`"
+    );
+    assert_eq!(
+        cfg.capture_comment(Track::Them).unwrap(),
+        "# capture_them: computed at runtime from `pactl get-default-sink`"
+    );
+    let set = Config::parse("capture_me = [\"x\"]\n").unwrap();
+    assert!(set.capture_comment(Track::Me).is_none());
 }
 
 #[test]

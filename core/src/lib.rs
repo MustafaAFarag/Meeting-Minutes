@@ -2,6 +2,7 @@ pub mod capture;
 pub mod config;
 mod exec;
 pub mod levels;
+mod native_capture;
 pub mod pipeline;
 pub mod publish;
 pub mod record;
@@ -11,6 +12,7 @@ pub mod summarize;
 pub mod transcribe;
 
 pub use config::Config;
+pub use native_capture::{run_capture, CaptureSource};
 pub use pipeline::process;
 pub use publish::publish;
 pub use record::{record, RecordOptions};

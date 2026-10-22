@@ -1,10 +1,12 @@
+use std::io;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::atomic::Ordering;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use mn_core::{Config, RecordOptions, Status};
+use mn_core::capture::Track;
+use mn_core::{CaptureSource, Config, RecordOptions, Status};
 
 #[derive(Parser)]
 #[command(
@@ -43,6 +45,8 @@ enum Command {
     },
     /// Print the effective config
     Config,
+    /// Write raw s16le 16 kHz mono PCM to stdout: `mic` or `system` (Windows and macOS)
+    Capture { source: CaptureSource },
 }
 
 /// One JSON line per status, on stdout. The GUI parses these.
@@ -95,20 +99,21 @@ fn run(cli: Cli) -> Result<()> {
             if cfg.artifact_url.is_none() {
                 println!("# artifact_url is not set (read from artifact_url.txt next to the config file)");
             }
-            if cfg.capture_me.is_none() {
-                println!("# capture_me: computed at runtime from `pactl get-default-source`");
-            }
-            if cfg.capture_them.is_none() {
-                println!("# capture_them: computed at runtime from `pactl get-default-sink`");
+            for track in Track::ALL {
+                if let Some(comment) = cfg.capture_comment(track) {
+                    println!("{comment}");
+                }
             }
         }
+        Command::Capture { source } => mn_core::run_capture(source, io::stdout().lock())?,
     }
     Ok(())
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    let machine_readable = !matches!(cli.command, Command::Config);
+    // `capture` owns stdout: it is the PCM stream, so an error goes to stderr only.
+    let machine_readable = !matches!(cli.command, Command::Config | Command::Capture { .. });
     match run(cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {

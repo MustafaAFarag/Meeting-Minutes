@@ -1,4 +1,6 @@
 //! `transcribe` end to end with a fake whisper_cli (a shell script).
+#![cfg(unix)]
+
 use std::cell::RefCell;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;

@@ -1,10 +1,12 @@
 use std::io::Read;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::mpsc::Sender;
 use std::thread;
 
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
+
+use crate::exec::command;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -41,7 +43,7 @@ impl CaptureProcess {
         let Some((program, args)) = argv.split_first() else {
             bail!("capture command for {} is empty", track.name());
         };
-        let mut child = Command::new(program)
+        let mut child = command(program)
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())

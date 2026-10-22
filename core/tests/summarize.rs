@@ -1,4 +1,6 @@
 //! `summarize` end to end with fake claude / codex CLIs (shell scripts).
+#![cfg(unix)]
+
 mod common;
 
 use std::cell::RefCell;

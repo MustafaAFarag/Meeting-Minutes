@@ -1,4 +1,6 @@
 //! `process` runs only the stages that are not done yet.
+#![cfg(unix)]
+
 mod common;
 
 use std::cell::RefCell;

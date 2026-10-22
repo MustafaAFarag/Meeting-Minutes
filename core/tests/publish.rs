@@ -1,4 +1,6 @@
 //! `publish` end to end with a fake claude CLI (a shell script).
+#![cfg(unix)]
+
 mod common;
 
 use std::cell::RefCell;

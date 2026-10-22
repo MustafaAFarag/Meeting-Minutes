@@ -1,4 +1,6 @@
 //! `record` with fake capture commands (shell one-liners that print raw PCM).
+#![cfg(unix)]
+
 use std::cell::RefCell;
 use std::fs;
 use std::path::{Path, PathBuf};

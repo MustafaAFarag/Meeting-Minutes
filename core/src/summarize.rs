@@ -1,6 +1,5 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Local, SecondsFormat};
@@ -8,7 +7,7 @@ use serde::Serialize;
 use serde_json::{json, Map, Value};
 
 use crate::config::Config;
-use crate::exec::{claude_command, reason, resolves, run, snippet};
+use crate::exec::{claude_command, command, reason, resolves, run, snippet};
 use crate::session::SessionInfo;
 use crate::status::Status;
 
@@ -210,7 +209,7 @@ fn run_codex_with_files(
     out_path: &Path,
 ) -> Result<Value> {
     fs::write(schema_path, SCHEMA).with_context(|| format!("writing {}", schema_path.display()))?;
-    let mut cmd = Command::new(&cfg.codex_cli);
+    let mut cmd = command(&cfg.codex_cli);
     cmd.args(["exec", "--skip-git-repo-check", "-C"])
         .arg(session_dir)
         .arg("--output-schema")
