@@ -22,11 +22,15 @@ The pilot PM (Mac) uses it on 5 real meetings in 1 week. Each card is correct (r
   - [x] B: `mac/audiotap` Swift helper for Mac system audio, Core Audio process tap
   - [x] C: Tauri bundling (.dmg / NSIS / AppImage) + `.github/workflows/build.yml`. Releases use fixed asset names
   - [x] `mn init-page` creates My Meetings on a fresh account (verified on the personal account, no M365)
-  - [x] Pushed to github.com/MustafaAFarag/Meeting-Minutes (public), tag v0.1.0 → first CI release build (run 39820411166)
+  - [x] Pushed to github.com/MustafaAFarag/Meeting-Minutes (public). v0.1.0 build failed (globstar in collect step; macOS /var vs /private/var in publish.rs:164); both fixed
+  - [ ] **v0.1.1 build running** (run 39828478212, tagged 2026-10-22 ~22:00). Check: all jobs green + release has 7 files (MeetingNotes-macos.dmg, MeetingNotes-windows-setup.exe, MeetingNotes-linux.AppImage, mn-macos, mn-windows.exe, mn-linux, whisper-cli-macos). Status: `curl -s https://api.github.com/repos/MustafaAFarag/Meeting-Minutes/actions/runs/39828478212`. On failure: give Mustafa a Claude in Chrome prompt to copy the failed step log (never ask for gh login)
 - [x] Ask Claude in My Meetings (minutes .docx in CTC format, recaps, free questions)
 - [x] 6. One-sentence setup: `scripts/setup/{mac,linux,windows}`, SETUP.md, README, CLAUDE.md/AGENTS.md. linux.sh passed 2 runs in a sandboxed home
+  - [x] name auto-detect (`--detect-name`: Mac account, Windows Office/365 name, Linux GECOS, Claude email guess); agent asks "Is your name X?"
+  - [x] Mac whisper built in CI (`whisper-cli-macos`, universal, Metal); Homebrew only as fallback
+  - [x] SETUP.md step 3 checks the M365 connector via `claude mcp list` (never blocks)
+  - [ ] real Linux install from the v0.1.1 release in a sandboxed HOME (real whisper + model download)
   - [ ] mac.sh on the brother's MacBook (first real run), windows.ps1 on Mustafa's PC (first real run)
-  - [ ] real Linux install from the published release (downloads whisper + model)
 - [ ] 7. Install on pilot Mac, run the pilot week
 
 ## Decisions
