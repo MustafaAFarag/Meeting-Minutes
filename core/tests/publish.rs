@@ -166,10 +166,13 @@ fn staging_dir_has_the_page_the_index_and_only_the_pending_meetings() {
     assert_eq!(call.stdin, "");
     let prompt = prompt_of(&call);
     assert!(prompt.starts_with(&format!(
-        "Update the existing artifact {URL}: publish with url set to it, file_path ./index.html (unchanged, do not edit it, omit capabilities so the stored ones are kept), and files {{"
+        "Update the existing artifact {URL}: first read it with action read, then list its files with action list, scope files and url set to it"
     )), "{prompt}");
     assert!(prompt.contains(
-        "If the publish is refused because the artifact was not read, read it with action read"
+        "Then publish with url set to it, file_path ./index.html (unchanged, do not edit it, omit capabilities so the stored ones are kept), and files {"
+    ));
+    assert!(prompt.contains(
+        "If the publish is still refused because some files were not read, read each path it names with action read and path"
     ));
     assert!(prompt
         .ends_with("Reply with only OK plus the list of published files, or the exact error."));

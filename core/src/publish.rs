@@ -101,7 +101,7 @@ pub fn parse_artifact_url(text: &str) -> Option<String> {
 
 fn update_prompt(url: &str, files_json: &str) -> String {
     format!(
-        "Update the existing artifact {url}: publish with url set to it, file_path ./index.html (unchanged, do not edit it, omit capabilities so the stored ones are kept), and files {files_json}. If the publish is refused because the artifact was not read, read it with action read and then publish again exactly the same way. Reply with only OK plus the list of published files, or the exact error."
+        "Update the existing artifact {url}: first read it with action read, then list its files with action list, scope files and url set to it, so the publish knows what is already there. Then publish with url set to it, file_path ./index.html (unchanged, do not edit it, omit capabilities so the stored ones are kept), and files {files_json}. If the publish is still refused because some files were not read, read each path it names with action read and path, then publish again exactly the same way. Reply with only OK plus the list of published files, or the exact error."
     )
 }
 
