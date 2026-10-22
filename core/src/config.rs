@@ -31,6 +31,16 @@ pub struct Config {
     pub capture_me: Option<Vec<String>>,
     /// Same, for system audio. `None` means computed from `pactl get-default-sink` at runtime.
     pub capture_them: Option<Vec<String>>,
+    /// The Claude Code CLI used for the card and the publish step.
+    pub claude_cli: PathBuf,
+    /// The Codex CLI, used when Claude fails to write the card.
+    pub codex_cli: PathBuf,
+    /// Exported as CLAUDE_CONFIG_DIR for every `claude` call (e.g. a work account's config dir).
+    pub claude_config_dir: Option<PathBuf>,
+    /// The PM's name, passed to the card prompt.
+    pub my_name: Option<String>,
+    /// The "My Meetings" artifact URL. `None` means read `artifact_url.txt` next to the config.
+    pub artifact_url: Option<String>,
 }
 
 impl Default for Config {
@@ -49,6 +59,11 @@ impl Default for Config {
             vad_model: None,
             capture_me: None,
             capture_them: None,
+            claude_cli: PathBuf::from("claude"),
+            codex_cli: PathBuf::from("codex"),
+            claude_config_dir: None,
+            my_name: None,
+            artifact_url: None,
         }
     }
 }
@@ -82,6 +97,9 @@ impl Config {
         cfg.whisper_cli = expand_tilde(&cfg.whisper_cli);
         cfg.whisper_model = cfg.whisper_model.map(|p| expand_tilde(&p));
         cfg.vad_model = cfg.vad_model.map(|p| expand_tilde(&p));
+        cfg.claude_cli = expand_tilde(&cfg.claude_cli);
+        cfg.codex_cli = expand_tilde(&cfg.codex_cli);
+        cfg.claude_config_dir = cfg.claude_config_dir.map(|p| expand_tilde(&p));
         Ok(cfg)
     }
 

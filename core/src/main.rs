@@ -9,7 +9,7 @@ use mn_core::{Config, RecordOptions, Status};
 #[derive(Parser)]
 #[command(
     version,
-    about = "Record a call as two tracks (Me, Them) and transcribe it locally"
+    about = "Record a call as two tracks (Me, Them), transcribe it locally, and publish a meeting card"
 )]
 struct Cli {
     /// Use this config file instead of ~/.config/meeting-notes/config.toml
@@ -29,7 +29,13 @@ enum Command {
     },
     /// Transcribe a recorded session dir, write transcript.md, delete the audio
     Transcribe { session_dir: PathBuf },
-    /// Record, then transcribe
+    /// Write the meeting card (Claude, then Codex) for a session with a transcript
+    Summarize { session_dir: PathBuf },
+    /// Publish every pending meeting to the "My Meetings" artifact
+    Publish,
+    /// Transcribe, summarize and publish a session, skipping stages that are already done
+    Process { session_dir: PathBuf },
+    /// Record, then process
     Run {
         /// Stop recording after this many seconds
         #[arg(long)]
@@ -66,14 +72,28 @@ fn run(cli: Cli) -> Result<()> {
         Command::Transcribe { session_dir } => {
             mn_core::transcribe(&cfg, &session_dir, emit)?;
         }
+        Command::Summarize { session_dir } => {
+            mn_core::summarize(&cfg, &session_dir, emit)?;
+        }
+        Command::Publish => mn_core::publish(&cfg, emit)?,
+        Command::Process { session_dir } => mn_core::process(&cfg, &session_dir, emit)?,
         Command::Run { max_seconds } => {
             let session = mn_core::record(&cfg, &record_options(max_seconds)?, emit)?;
-            mn_core::transcribe(&cfg, &session, emit)?;
+            mn_core::process(&cfg, &session, emit)?;
         }
         Command::Config => {
             print!("{}", cfg.to_toml()?);
             if cfg.whisper_model.is_none() {
                 println!("# whisper_model is not set (required for transcribe)");
+            }
+            if cfg.claude_config_dir.is_none() {
+                println!("# claude_config_dir is not set (claude uses its normal login)");
+            }
+            if cfg.my_name.is_none() {
+                println!("# my_name is not set (the card prompt says \"unknown\")");
+            }
+            if cfg.artifact_url.is_none() {
+                println!("# artifact_url is not set (read from artifact_url.txt next to the config file)");
             }
             if cfg.capture_me.is_none() {
                 println!("# capture_me: computed at runtime from `pactl get-default-source`");
