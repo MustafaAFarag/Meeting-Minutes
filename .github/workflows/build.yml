@@ -28,6 +28,8 @@ jobs:
             tauri_args: ""
             bundle_glob: app/src-tauri/target/**/release/bundle/appimage/*.AppImage
     runs-on: ${{ matrix.os }}
+    # A full build takes 20-35 min. Without a limit a hung step runs for GitHub's 6 h default.
+    timeout-minutes: 75
     defaults:
       run:
         shell: bash
@@ -39,11 +41,15 @@ jobs:
         with:
           targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
+      # v0.1.1 hung here for 4 h. Normally under 2 min.
       - name: Install Linux system packages
         if: runner.os == 'Linux'
+        timeout-minutes: 10
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y \
             libwebkit2gtk-4.1-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
@@ -188,7 +194,7 @@ jobs:
           ls -la out
 
       - name: Upload files
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: meeting-notes-${{ matrix.name }}
           path: out/*
@@ -196,13 +202,14 @@ jobs:
 
   release:
     name: Release
+    timeout-minutes: 15
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-22.04
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           path: dist
           pattern: meeting-notes-*
