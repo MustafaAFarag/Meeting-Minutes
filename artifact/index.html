@@ -85,6 +85,9 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .tab { border: 0; background: var(--surface); border-radius: 999px; padding: 5px 13px; font-weight: 500; }
 .tab:hover { background: var(--sel); }
 .tab[aria-selected="true"] { background: var(--accent); color: var(--accent-fg); }
+.seg { display: inline-flex; gap: 2px; padding: 3px; background: var(--surface); border-radius: 999px; margin: 0 0 10px; }
+.seg button { border: 0; background: none; border-radius: 999px; padding: 4px 12px; font-size: 14px; font-weight: 500; color: var(--muted); }
+.seg button[aria-pressed="true"] { background: var(--sel); color: var(--fg); }
 .tab small { opacity: .8; margin-left: 4px; font-size: 13px; font-variant-numeric: tabular-nums; }
 #search { flex: 1 1 200px; min-width: 0; max-width: 100%; border: 0; background: var(--surface); color: var(--fg); border-radius: 8px; padding: 9px 14px; font: inherit; }
 #search::placeholder { color: var(--muted); }
@@ -213,6 +216,9 @@ a { color: var(--ctl); text-underline-offset: 2px; }
   function doneOf(m) { return ticks.get(m.id) || {}; }
   var titles = new Map();                       // meeting id -> the user's own title
   function titleOf(m) { return titles.get(m.id) || m.title || ""; }
+  var dueFilter = "week";                       // My to-dos: "today" | "week" | "all"
+  try { var savedDue = localStorage.getItem("mm-due"); if (savedDue === "today" || savedDue === "all") dueFilter = savedDue; } catch (e) {}
+  var archived = new Set();                     // meeting ids the user archived (hidden, never deleted)
   var editing = null, editDraft = "";           // meeting id being renamed, and the text typed so far
 
   var $ = function (id) { return document.getElementById(id); };
@@ -242,12 +248,14 @@ a { color: var(--ctl); text-underline-offset: 2px; }
   }
 
   /* ---------- data helpers ---------- */
-  function sortedMeetings() {
-    return Array.from(meetings.values()).sort(function (a, b) { return String(b.started_at || b.id).localeCompare(String(a.started_at || a.id)); });
+  /* Archived meetings leave the lists and their to-dos stop counting; the Archived tab brings them back. */
+  function sortedMeetings(arch) {
+    return Array.from(meetings.values()).filter(function (m) { return archived.has(m.id) === !!arch; }).sort(function (a, b) { return String(b.started_at || b.id).localeCompare(String(a.started_at || a.id)); });
   }
   function allItems() {
     var out = [];
     meetings.forEach(function (m) {
+      if (archived.has(m.id)) return;
       var done = doneOf(m);
       (m.my_todos || []).forEach(function (t, i) { var k = "todo-" + i; out.push({ kind: "todo", key: k, m: m, text: t.text, due: t.due, done: !!done[k] }); });
       (m.waiting_on || []).forEach(function (t, i) { var k = "wait-" + i; out.push({ kind: "wait", key: k, m: m, text: t.text, due: t.due, who: t.who, done: !!done[k] }); });
@@ -336,10 +344,15 @@ a { color: var(--ctl); text-underline-offset: 2px; }
       '<span class="meta">' + h.when + "</span>" + (h.chips ? '<span class="chips">' + h.chips + "</span>" : "") + "</div>";
   }
   var PEN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>';
+  var BIN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg>';
+  var RESTORE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>';
   /* The title with a pen to rename it. tag "" = only the pen (narrow cards already show the title). */
   function titleHtml(m, tag) {
     if (editing === m.id) return '<div class="tline"><input class="rename" id="rename-input" data-rename="' + esc(m.id) + '" maxlength="120" aria-label="Meeting name"></div>';
-    var pen = canWrite ? '<button class="pen" data-pen="' + esc(m.id) + '" title="Rename" aria-label="Rename meeting">' + PEN + "</button>" : "";
+    var pen = !canWrite ? "" : '<button class="pen" data-pen="' + esc(m.id) + '" title="Rename" aria-label="Rename meeting">' + PEN + "</button>" +
+      (archived.has(m.id)
+        ? '<button class="pen" data-restore="' + esc(m.id) + '" title="Restore" aria-label="Restore meeting">' + RESTORE + "</button>"
+        : '<button class="pen" data-archive="' + esc(m.id) + '" title="Archive" aria-label="Archive meeting">' + BIN + "</button>");
     var name = tag ? "<" + tag + (tag === "span" ? ' class="rt"' : "") + ">" + esc(titleOf(m)) + "</" + tag + ">" : "";
     return '<div class="tline">' + name + pen + "</div>";
   }
@@ -372,9 +385,12 @@ a { color: var(--ctl); text-underline-offset: 2px; }
     var focus = overdue.concat(dueToday);
     $("today").innerHTML = '<h2 id="today-h">Today</h2>' + (focus.length ?
       '<ul class="items">' + focus.map(function (i) { return itemHtml(i, false); }).join("") + "</ul>" :
-      '<p class="none">' + (meetings.size ? "Nothing is due today. You are on top of it." : "Your to-dos from meetings will show up here.") + "</p>");
+      '<p class="none">' + (sortedMeetings().length ? "Nothing is due today. You are on top of it." : "Your to-dos from meetings will show up here.") + "</p>");
 
-    $("tabs").innerHTML = [["meetings", "Meetings", meetings.size], ["todos", "My to-dos", todos.length], ["waiting", "Waiting on others", waits.length], ["done", "Done", doneItems.length]]
+    var tabList = [["meetings", "Meetings", sortedMeetings().length], ["todos", "My to-dos", todos.length], ["waiting", "Waiting on others", waits.length], ["done", "Done", doneItems.length]];
+    if (archived.size) tabList.push(["archived", "Archived", sortedMeetings(true).length]);
+    else if (tab === "archived") tab = "meetings";
+    $("tabs").innerHTML = tabList
       .map(function (t) { return '<button class="tab" role="tab" data-tab="' + t[0] + '" aria-selected="' + (tab === t[0]) + '">' + t[1] + "<small>" + t[2] + "</small></button>"; }).join("");
 
     $("note").hidden = !ticksLocal;
@@ -384,20 +400,28 @@ a { color: var(--ctl); text-underline-offset: 2px; }
     if (!meetings.size) { put('<div class="empty"><b>No meetings yet</b>Click Start in the widget when your next call begins.</div>'); return; }
 
     var ok = function (i) { return matches(i.m); };
-    if (tab === "meetings") {
-      var list = sortedMeetings().filter(matches);
-      if (!list.length) { put('<div class="empty">No meetings match your search.</div>'); return; }
+    if (tab === "meetings" || tab === "archived") {
+      var list = sortedMeetings(tab === "archived").filter(matches);
+      if (!list.length) { put('<div class="empty">' + (query ? "No meetings match your search." : tab === "archived" ? "Nothing archived." : "<b>No meetings</b>Archived meetings are under Archived.") + "</div>"); return; }
       if (!wide) { put(list.map(cardHtml).join("")); return; }
       var cur = list.filter(function (m) { return m.id === selected; })[0] || list[0];
       put(detailHtml(cur), list.map(function (m) { return rowHtml(m, m.id === cur.id); }).join(""));
     } else if (tab === "todos") {
       var groups = [["over", "Overdue"], ["today", "Today"], ["week", "This week"], ["later", "Later"], ["none", "No date"]], html = "";
-      var mine = todos.filter(ok).sort(function (a, b) { return String(a.due || "9").localeCompare(String(b.due || "9")); });
+      // Today = overdue + today. This week also shows the next 7 days and undated to-dos, so nothing undated gets lost.
+      var shown = { today: ["over", "today"], week: ["over", "today", "week", "none"], all: ["over", "today", "week", "later", "none"] }[dueFilter];
+      var mine = todos.filter(ok).filter(function (i) { return shown.indexOf(bucket(i.due)) !== -1; })
+        .sort(function (a, b) { return String(a.due || "9").localeCompare(String(b.due || "9")); });
+      html = '<div class="seg" role="group" aria-label="Show to-dos">' + [["today", "Due today"], ["week", "This week"], ["all", "All"]].map(function (f) {
+        return '<button data-due="' + f[0] + '" aria-pressed="' + (dueFilter === f[0]) + '">' + f[1] + "</button>";
+      }).join("") + "</div>";
+      var head = html;
       groups.forEach(function (g) {
         var rows = mine.filter(function (i) { return bucket(i.due) === g[0]; });
         if (rows.length) html += '<div class="group"><h3 class="' + (g[0] === "over" ? "over" : "") + '">' + g[1] + '</h3><div class="panel"><ul class="items">' + rows.map(function (i) { return itemHtml(i, false); }).join("") + "</ul></div></div>";
       });
-      put(html || '<div class="empty"><b>No open to-dos</b>Nice work.</div>');
+      put(html !== head ? html : head + '<div class="empty"><b>' + (todos.length ? (dueFilter === "today" ? "Nothing due today" : "Nothing due this week") : "No open to-dos") + "</b>" +
+        (todos.length && dueFilter !== "all" ? "Choose All to see later to-dos." : "Nice work.") + "</div>");
     } else if (tab === "waiting") {
       var w = waits.filter(ok).sort(function (a, b) { return String(a.due || "9").localeCompare(String(b.due || "9")); });
       put(w.length ? '<div class="panel"><ul class="items">' + w.map(function (i) { return itemHtml(i, true); }).join("") + "</ul></div>" : '<div class="empty"><b>Nobody owes you anything</b>Promises from others will appear here.</div>');
@@ -447,6 +471,22 @@ a { color: var(--ctl); text-underline-offset: 2px; }
     writeChain.set(key, p);
   }
 
+  function saveLocalArchive() {
+    try { localStorage.setItem("mm-archived", JSON.stringify(Array.from(archived))); } catch (e) {}
+  }
+  function setArchived(id, on) {
+    if (!meetings.has(id) || !canWrite || archived.has(id) === on) return;
+    if (on) archived.add(id); else archived.delete(id);
+    if (selected === id) selected = null;
+    render();                                                        // instant
+    toast(on ? "Archived. It is under the Archived tab." : "Restored to Meetings.");
+    if (!db) { saveLocalArchive(); return; }
+    var key = "a:" + id, ref = db.doc("archived/" + id);
+    var p = (writeChain.get(key) || Promise.resolve()).then(function () { return on ? ref.set({ at: new Date().toISOString() }) : ref.delete(); })
+      .catch(function () { if (on) archived.delete(id); else archived.add(id); render(); toast("Could not save that. Try again in a moment."); });
+    writeChain.set(key, p);
+  }
+
   function loadTranscript(id) {
     if (trText.has(id) || trBusy.has(id)) return Promise.resolve();
     trBusy.add(id); render();
@@ -470,6 +510,10 @@ a { color: var(--ctl); text-underline-offset: 2px; }
   document.addEventListener("click", function (ev) {
     if (ev.target.closest("[data-rename]")) return;
     var pen = ev.target.closest("[data-pen]"); if (pen) { startRename(pen.dataset.pen); return; }
+    var df = ev.target.closest("[data-due]");
+    if (df) { dueFilter = df.dataset.due; try { localStorage.setItem("mm-due", dueFilter); } catch (e) {} render(); return; }
+    var ar = ev.target.closest("[data-archive],[data-restore]");
+    if (ar) { setArchived(ar.dataset.archive || ar.dataset.restore, !!ar.dataset.archive); return; }
     var el = ev.target.closest("[data-tab],[data-select],[data-toggle],[data-tr],[data-dl],[data-goto]"); if (!el) return;
     if (el.dataset.tab) { tab = el.dataset.tab; render(); }
     else if (el.dataset.select) { selected = el.dataset.select; render(); }
@@ -538,6 +582,10 @@ a { color: var(--ctl); text-underline-offset: 2px; }
       snap.docs.forEach(function (doc) { ticks.set(doc.id, doc.data() || {}); });
       render();
     }, function () { db = null; useLocalTicks(); });
+    db.collection("archived").onSnapshot(function (snap) {
+      archived = new Set(snap.docs.map(function (doc) { return doc.id; }));
+      render();
+    }, function () {});
     db.collection("titles").onSnapshot(function (snap) {
       titles = new Map();
       snap.docs.forEach(function (doc) { var t = (doc.data() || {}).title; if (t) titles.set(doc.id, String(t)); });
@@ -547,6 +595,7 @@ a { color: var(--ctl); text-underline-offset: 2px; }
   function useLocalTicks() {
     ticksLocal = true;
     try { var o = JSON.parse(localStorage.getItem("mm-ticks") || "{}"); Object.keys(o).forEach(function (k) { ticks.set(k, o[k]); }); } catch (e) {}
+    try { (JSON.parse(localStorage.getItem("mm-archived") || "[]") || []).forEach(function (k) { archived.add(String(k)); }); } catch (e) {}
     try { var t = JSON.parse(localStorage.getItem("mm-titles") || "{}"); Object.keys(t).forEach(function (k) { titles.set(k, String(t[k])); }); } catch (e) {}
     render();
   }
