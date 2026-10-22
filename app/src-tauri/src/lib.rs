@@ -293,7 +293,7 @@ fn report(window: &Window, label: &str) {
 /// belongs, move it there, and if it is hidden without the user asking for that, show it.
 fn ensure_placed(window: &Window) {
     let state = window.state::<NotchState>();
-    if state.dragging.load(Ordering::SeqCst) {
+    if state.dragging.load(Ordering::SeqCst) || state.user_hidden.load(Ordering::SeqCst) {
         return;
     }
     if let (Some(want), Ok(have)) = (target_position(window, &state), window.outer_position()) {
@@ -316,7 +316,7 @@ fn set_size(window: Window, state: State<'_, NotchState>, folded: bool) -> Resul
     window
         .set_size(LogicalSize::new(width, height))
         .map_err(|e| format!("Could not resize the window: {e}"))?;
-    if !state.dragging.load(Ordering::SeqCst) {
+    if !state.dragging.load(Ordering::SeqCst) && !state.user_hidden.load(Ordering::SeqCst) {
         place(&window, &state);
     }
     if !state.user_hidden.load(Ordering::SeqCst) && !window.is_visible().unwrap_or(true) {
@@ -448,6 +448,26 @@ fn describe_window(window: &Window) -> String {
     format!("pos={pos} size={size} visible={visible}")
 }
 
+/// Linux: an unmapped webview is slow to redraw when it comes back, and KWin will not let the
+/// window sit off screen. So "hidden" there means fully transparent and click-through, which is
+/// instant and also invisible in a screen share. Elsewhere a real hide/show is already instant.
+#[cfg(target_os = "linux")]
+fn set_hidden(window: &Window, hidden: bool) {
+    let w = window.clone();
+    let _ = window.run_on_main_thread(move || {
+        use gtk::prelude::WidgetExt;
+        if let Ok(gtk_window) = w.gtk_window() {
+            gtk_window.set_opacity(if hidden { 0.0 } else { 1.0 });
+        }
+        let _ = w.set_ignore_cursor_events(hidden);
+    });
+}
+
+#[cfg(not(target_os = "linux"))]
+fn set_hidden(window: &Window, hidden: bool) {
+    let _ = if hidden { window.hide() } else { window.show() };
+}
+
 fn show_window(app: &AppHandle) {
     let Some(webview) = app.get_webview_window(WINDOW_LABEL) else {
         return;
@@ -455,9 +475,11 @@ fn show_window(app: &AppHandle) {
     let window = webview.as_ref().window();
     let state = app.state::<NotchState>();
     state.user_hidden.store(false, Ordering::SeqCst);
-    let _ = window.show();
-    let _ = window.unminimize();
-    // The window manager may put a re-shown window anywhere, so put it back on its edge.
+    // Unmapped only at startup (tauri.conf.json starts it hidden).
+    if !window.is_visible().unwrap_or(false) {
+        let _ = window.show();
+    }
+    set_hidden(&window, false);
     place(&window, &state);
     log(&format!("show: {}", describe_window(&window)));
     // Showing is asynchronous on X11: check again once it has happened.
@@ -468,17 +490,17 @@ fn show_window(app: &AppHandle) {
     });
 }
 
+/// Hides the widget. Recording is not touched.
 fn hide_window(app: &AppHandle) {
-    if let Some(webview) = app.get_webview_window(WINDOW_LABEL) {
-        app.state::<NotchState>()
-            .user_hidden
-            .store(true, Ordering::SeqCst);
-        let _ = webview.hide();
-        log(&format!(
-            "hide: {}",
-            describe_window(&webview.as_ref().window())
-        ));
-    }
+    let Some(webview) = app.get_webview_window(WINDOW_LABEL) else {
+        return;
+    };
+    let window = webview.as_ref().window();
+    app.state::<NotchState>()
+        .user_hidden
+        .store(true, Ordering::SeqCst);
+    set_hidden(&window, true);
+    log(&format!("hide: {}", describe_window(&window)));
 }
 
 /// Decides by our own flag, not by `is_visible()`: on X11 that answer lags behind a show or
@@ -632,6 +654,16 @@ pub fn run() {
             first_run_autostart(handle);
             build_tray(handle)?;
             register_hotkeys(handle);
+            if selftest_on() {
+                // No keyboard in the self-test: press "Ctrl+Alt+M" on a timer instead.
+                let handle = handle.clone();
+                thread::spawn(move || {
+                    for _ in 0..6 {
+                        thread::sleep(Duration::from_millis(1500));
+                        toggle_window(&handle);
+                    }
+                });
+            }
             Ok(())
         })
         .on_window_event(|window, event| match event {

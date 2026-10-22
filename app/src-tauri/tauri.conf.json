@@ -23,7 +23,8 @@
         "maximizable": false,
         "alwaysOnTop": true,
         "skipTaskbar": true,
-        "visibleOnAllWorkspaces": true
+        "visibleOnAllWorkspaces": true,
+        "contentProtected": true
       }
     ],
     "security": {
