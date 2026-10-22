@@ -1,6 +1,7 @@
 # Meeting Notes setup for Windows. Safe to run again: it updates in place and never touches
 # your notes or your My Meetings page address. Works in Windows PowerShell 5.1 and PowerShell 7.
 #
+#   powershell -ExecutionPolicy Bypass -File scripts\setup\windows.ps1 -DetectName
 #   powershell -ExecutionPolicy Bypass -File scripts\setup\windows.ps1 -Name "Full Name" `
 #       [-Model small|turbo] [-SkipPage] [-SkipLaunch] [-ReleaseBase <url-or-dir>]
 #
@@ -15,8 +16,140 @@ param(
     [string]$ReleaseBase = 'https://github.com/MustafaAFarag/Meeting-Minutes/releases/latest/download',
     # Hidden, for tests.
     [string]$WhisperCli = '',
-    [string]$WhisperModel = ''
+    [string]$WhisperModel = '',
+    [switch]$DetectName
 )
+
+# JSON with every non-ASCII character escaped, so the console code page cannot damage it.
+function ConvertTo-AsciiJson($Object) {
+    $json = ConvertTo-Json -InputObject $Object -Compress -Depth 5
+    return [regex]::Replace($json, '[^\x00-\x7F]', { param($m) '\u{0:x4}' -f [int][char]$m.Value })
+}
+
+function Get-UsableDetectedName([object]$Value, [string]$LoginName) {
+    if ($null -eq $Value) { return $null }
+    $candidate = ([string]$Value).Trim()
+    if ([string]::IsNullOrWhiteSpace($candidate)) { return $null }
+    if ($LoginName -and [string]::Equals($candidate, $LoginName, [System.StringComparison]::OrdinalIgnoreCase)) { return $null }
+    if (@('admin', 'administrator', 'user', 'owner', 'root', 'guest', 'microsoft account') -contains $candidate) { return $null }
+    if ($candidate -notmatch '\p{L}') { return $null }
+    return $candidate
+}
+
+function ConvertFrom-EmailNameGuess([string]$Email) {
+    if ([string]::IsNullOrWhiteSpace($Email)) { return $null }
+    $atIndex = $Email.IndexOf('@')
+    if ($atIndex -le 0) { return $null }
+    $localPart = $Email.Substring(0, $atIndex)
+    if ($localPart -notmatch '^[A-Za-z]+(?:[._-][A-Za-z]+)+$') { return $null }
+    $parts = @($localPart -split '[._-]')
+    if ($parts.Count -lt 2) { return $null }
+    $textInfo = [System.Globalization.CultureInfo]::InvariantCulture.TextInfo
+    $titleParts = @()
+    foreach ($part in $parts) {
+        $titleParts += $textInfo.ToTitleCase($part.ToLowerInvariant())
+    }
+    return ($titleParts -join ' ')
+}
+
+function Find-DetectionClaude {
+    $cmd = Get-Command 'claude' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($cmd) { return [string]$cmd.Source }
+    $userHome = [Environment]::GetFolderPath('UserProfile')
+    foreach ($path in @(
+        (Join-Path $userHome '.local\bin\claude.exe'),
+        (Join-Path $env:APPDATA 'npm\claude.cmd'),
+        (Join-Path $userHome '.claude\local\claude.exe')
+    )) {
+        if ($path -and (Test-Path -LiteralPath $path)) { return $path }
+    }
+    return ''
+}
+
+# Run auth status without files and terminate it if it takes more than 3.5 seconds.
+function Get-DetectionClaudeStatus([string]$Claude) {
+    $process = $null
+    try {
+        $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+        if ([IO.Path]::GetExtension($Claude) -match '^\.(cmd|bat)$') {
+            $startInfo.FileName = $env:ComSpec
+            $startInfo.Arguments = '/d /s /c ""' + $Claude + '" auth status"'
+        } else {
+            $startInfo.FileName = $Claude
+            $startInfo.Arguments = 'auth status'
+        }
+        $startInfo.UseShellExecute = $false
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        $startInfo.CreateNoWindow = $true
+        $process = New-Object System.Diagnostics.Process
+        $process.StartInfo = $startInfo
+        if (-not $process.Start()) { return $null }
+        $stdout = $process.StandardOutput.ReadToEndAsync()
+        $stderr = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit(3500)) {
+            try { $process.Kill() } catch { }
+            return $null
+        }
+        $process.WaitForExit()
+        if ($process.ExitCode -ne 0) { return $null }
+        return [string]$stdout.Result
+    } catch {
+        return $null
+    } finally {
+        if ($process) { $process.Dispose() }
+    }
+}
+
+if ($DetectName) {
+    $detectedName = $null
+    $detectedSource = $null
+    $candidate = $null
+
+    try {
+        $office = Get-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Office\Common\UserInfo' -Name 'UserName' -ErrorAction Stop
+        $candidate = [string]$office.UserName
+        $detectedName = Get-UsableDetectedName $candidate $env:USERNAME
+        if ($detectedName) { $detectedSource = 'office' }
+    } catch { }
+
+    if (-not $detectedName) {
+        try {
+            [void](Add-Type -AssemblyName System.DirectoryServices.AccountManagement -ErrorAction Stop)
+            $candidate = [System.DirectoryServices.AccountManagement.UserPrincipal]::Current.DisplayName
+            $detectedName = Get-UsableDetectedName $candidate $env:USERNAME
+            if ($detectedName) { $detectedSource = 'windows-account' }
+        } catch { }
+    }
+
+    if (-not $detectedName) {
+        try {
+            $localUser = Get-LocalUser -Name $env:USERNAME -ErrorAction Stop
+            $candidate = [string]$localUser.FullName
+            $detectedName = Get-UsableDetectedName $candidate $env:USERNAME
+            if ($detectedName) { $detectedSource = 'windows-account' }
+        } catch { }
+    }
+
+    if (-not $detectedName) {
+        try {
+            $claude = Find-DetectionClaude
+            if ($claude) {
+                $status = Get-DetectionClaudeStatus $claude
+                if ($status) {
+                    $statusObject = ConvertFrom-Json -InputObject $status -ErrorAction Stop
+                    $guess = ConvertFrom-EmailNameGuess ([string]$statusObject.email)
+                    $detectedName = Get-UsableDetectedName $guess $env:USERNAME
+                    if ($detectedName) { $detectedSource = 'claude-email-guess' }
+                }
+            }
+        } catch { }
+    }
+
+    $result = [ordered]@{ name = $detectedName; source = $detectedSource }
+    [Console]::Out.WriteLine('DETECTED_NAME ' + (ConvertTo-AsciiJson $result))
+    exit 0
+}
 
 $ErrorActionPreference = 'Stop'
 # Invoke-WebRequest is very slow with the progress bar on 5.1.
@@ -30,12 +163,6 @@ $script:StepNumber = 0
 $script:Warnings = New-Object System.Collections.ArrayList
 
 # ---------------------------------------------------------------- helpers
-
-# JSON with every non-ASCII character escaped, so the console code page cannot damage it.
-function ConvertTo-AsciiJson($Object) {
-    $json = ConvertTo-Json -InputObject $Object -Compress -Depth 5
-    return [regex]::Replace($json, '[^\x00-\x7F]', { param($m) '\u{0:x4}' -f [int][char]$m.Value })
-}
 
 function Write-Step([string]$Text) {
     $script:StepNumber = $script:StepNumber + 1

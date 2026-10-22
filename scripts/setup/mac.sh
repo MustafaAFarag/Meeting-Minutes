@@ -2,6 +2,7 @@
 # Meeting Notes setup for macOS. Safe to run again: it updates in place and never touches
 # your notes or your My Meetings page address. Works with the bash 3.2 that ships with macOS.
 #
+#   bash scripts/setup/mac.sh --detect-name
 #   bash scripts/setup/mac.sh --name "Full Name" [--model small|turbo] [--skip-page] [--skip-launch]
 #                             [--release-base <url-or-dir>]
 #
@@ -38,6 +39,122 @@ json_str() {
   printf '%s' "$1" | tr '\t\r\n' '   ' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
 }
 
+usable_name() {
+  local candidate login candidate_lower login_lower
+  candidate="$(printf '%s' "$1" | tr '\t\r\n' '   ' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')" || return 1
+  login="${2:-}"
+  [ -n "$candidate" ] || return 1
+  candidate_lower="$(printf '%s' "$candidate" | tr '[:upper:]' '[:lower:]')" || return 1
+  login_lower="$(printf '%s' "$login" | tr '[:upper:]' '[:lower:]')" || return 1
+  [ "$candidate_lower" != "$login_lower" ] || return 1
+  case "$candidate_lower" in
+    admin|administrator|user|owner|root|guest|"microsoft account") return 1 ;;
+  esac
+  printf '%s' "$candidate" | grep -Eq '[[:alpha:]]' || return 1
+  printf '%s' "$candidate"
+}
+
+email_name_guess() {
+  local email local_part parts part result first rest count
+  email="$1"
+  case "$email" in *@*) local_part="${email%%@*}" ;; *) return 1 ;; esac
+  parts="$(printf '%s' "$local_part" | tr '[:upper:]' '[:lower:]' | awk -F '[-._]' '
+    NF < 2 { exit 1 }
+    {
+      for (i = 1; i <= NF; i++) {
+        if ($i !~ /^[a-z]+$/) exit 1
+        print $i
+      }
+    }
+  ')" || return 1
+  [ -n "$parts" ] || return 1
+  result=""
+  count=0
+  while IFS= read -r part; do
+    [ -n "$part" ] || return 1
+    first="$(printf '%s' "$part" | cut -c 1 | tr '[:lower:]' '[:upper:]')" || return 1
+    rest="$(printf '%s' "$part" | cut -c 2-)" || return 1
+    if [ "$count" -gt 0 ]; then result="$result "; fi
+    result="${result}${first}${rest}"
+    count=$((count + 1))
+  done <<EOF
+$parts
+EOF
+  [ "$count" -ge 2 ] || return 1
+  printf '%s' "$result"
+}
+
+find_claude_for_detection() {
+  local c
+  if command -v claude >/dev/null 2>&1; then
+    command -v claude
+    return 0
+  fi
+  for c in "${HOME:-}/.local/bin/claude" "${HOME:-}/.claude/local/claude" /opt/homebrew/bin/claude /usr/local/bin/claude "${HOME:-}/.npm-global/bin/claude"; do
+    if [ -n "$c" ] && [ -x "$c" ]; then printf '%s' "$c"; return 0; fi
+  done
+  return 1
+}
+
+detect_claude_email_name() {
+  local claude timer auth_out email guess
+  claude="$(find_claude_for_detection 2>/dev/null)" || return 1
+  if command -v timeout >/dev/null 2>&1; then
+    timer="$(command -v timeout)"
+    auth_out="$("$timer" 3 "$claude" auth status 2>/dev/null)" || return 1
+  elif command -v gtimeout >/dev/null 2>&1; then
+    timer="$(command -v gtimeout)"
+    auth_out="$("$timer" 3 "$claude" auth status 2>/dev/null)" || return 1
+  elif command -v perl >/dev/null 2>&1; then
+    # macOS has no timeout command; perl ships with it and can do the same.
+    auth_out="$(perl -e 'alarm shift; exec @ARGV' 3 "$claude" auth status 2>/dev/null)" || return 1
+  else
+    return 1
+  fi
+  email="$(printf '%s\n' "$auth_out" | sed -n 's/.*"email"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)" || return 1
+  guess="$(email_name_guess "$email" 2>/dev/null)" || return 1
+  usable_name "$guess" "${USER:-}"
+}
+
+detect_name() {
+  local detected source candidate
+  detected=""
+  source=""
+
+  if candidate="$(id -F 2>/dev/null)"; then
+    detected="$(usable_name "$candidate" "${USER:-}" 2>/dev/null)" || detected=""
+  fi
+  if [ -z "$detected" ] && candidate="$(dscl . -read "/Users/${USER:-}" RealName 2>/dev/null | awk '
+    NR == 1 {
+      sub(/^RealName:[[:space:]]*/, "")
+      if (length($0) > 0) value = $0
+    }
+    NR > 1 && value == "" {
+      sub(/^[[:space:]]*/, "")
+      if (length($0) > 0) value = $0
+    }
+    END { if (value != "") print value }
+  ')"; then
+    detected="$(usable_name "$candidate" "${USER:-}" 2>/dev/null)" || detected=""
+  fi
+  if [ -n "$detected" ]; then source="macos-account"; fi
+
+  if [ -z "$detected" ]; then
+    detected="$(detect_claude_email_name 2>/dev/null)" || detected=""
+    if [ -n "$detected" ]; then source="claude-email-guess"; fi
+  fi
+
+  if [ -n "$detected" ]; then
+    printf 'DETECTED_NAME {"name":"%s","source":"%s"}\n' "$(json_str "$detected")" "$source"
+  else
+    printf 'DETECTED_NAME {"name":null,"source":null}\n'
+  fi
+}
+
+for arg in "$@"; do
+  if [ "$arg" = "--detect-name" ]; then detect_name; exit 0; fi
+done
+
 toml_str() {
   printf '"%s"' "$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
 }
@@ -62,6 +179,7 @@ die() {
 usage() {
   cat <<'USAGE'
 Usage: bash scripts/setup/mac.sh --name "Full Name" [options]
+  --detect-name             print the detected full name and exit
   --name "Full Name"        the person's full name (asked once; kept from the old config on re-runs)
   --model small|turbo       speech model (default: turbo on Apple Silicon, small on Intel)
   --skip-page               do not create the My Meetings page

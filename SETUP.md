@@ -36,7 +36,16 @@ The scripts check this too and stop with a plain sentence if it is not true.
 
 ## 3. Ask the only question
 
-Ask: **"What is your full name?"** (It goes on the meeting cards, so the notes can say which lines are yours.)
+Run the matching command and read its `DETECTED_NAME` line:
+
+- macOS: `bash scripts/setup/mac.sh --detect-name`
+- Linux: `bash scripts/setup/linux.sh --detect-name`
+- Windows: `powershell -ExecutionPolicy Bypass -File scripts\setup\windows.ps1 -DetectName`
+
+If a name came back, ask: **"Is your name Sarah Smith? Reply yes, or type your full name."** Replace `Sarah Smith` with the detected name. Ask the same way when the source is `claude-email-guess`.
+If no name came back, ask: **"What is your full name?"**
+If they reply yes, use the detected name; otherwise, use the name they type.
+It goes on the meeting cards, so the notes know which to-dos are yours.
 Do not ask anything else. The defaults are right for everyone.
 
 ## 4. Tell the user what will happen (2 lines)
