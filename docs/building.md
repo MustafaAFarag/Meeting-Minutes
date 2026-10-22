@@ -6,21 +6,28 @@ GitHub Actions builds the app for Mac, Windows and Linux. The installers are **u
 
 - **Test build (nothing is released):** GitHub → Actions → "Build installers" → Run workflow.
 - **Release build:** bump `version` in `app/src-tauri/tauri.conf.json` (and `Cargo.toml`), then
-  `git tag v0.1.0 && git push origin v0.1.0`. This also creates a **draft** GitHub Release.
-  Nothing is public until you open the draft and click Publish.
+  `git tag v0.1.0 && git push origin v0.1.0`. This publishes a GitHub Release (not a draft) and marks it
+  as the latest one. It is public as soon as the build finishes, because the setup scripts download from
+  `releases/latest/download/<name>`.
 
 A build takes about 15 to 25 minutes the first time, about 8 to 12 once the cache is warm.
 
 ## Where the files are
 
-| OS | File | Where |
-|----|------|-------|
-| Mac | `Meeting Notes_<version>_universal.dmg` | run page → Artifacts → `meeting-notes-macos` |
-| Windows | `Meeting Notes_<version>_x64-setup.exe` | run page → Artifacts → `meeting-notes-windows` |
-| Linux | `Meeting Notes_<version>_amd64.AppImage` | run page → Artifacts → `meeting-notes-linux` |
+Every file has a **fixed name** (no version in it). The setup scripts depend on these names, so do not rename them.
 
-On a `v*` tag the same three files are also attached to the draft release (GitHub → Releases).
+| OS | App | CLI (`mn`) | Run page → Artifacts |
+|----|-----|------------|----------------------|
+| Mac | `MeetingNotes-macos.dmg` (universal) | `mn-macos` | `meeting-notes-macos` |
+| Windows | `MeetingNotes-windows-setup.exe` | `mn-windows.exe` | `meeting-notes-windows` |
+| Linux | `MeetingNotes-linux.AppImage` | `mn-linux` | `meeting-notes-linux` |
+
+On a `v*` tag the same six files are attached to the published release (GitHub → Releases), and
+`https://github.com/MustafaAFarag/Meeting-Minutes/releases/latest/download/<name>` serves them.
 Artifacts are kept 90 days.
+
+The installers come from `scripts/setup/` (see `SETUP.md`). To test the scripts without a release, point
+them at a local folder that holds the six files: `--release-base <dir>` (Windows: `-ReleaseBase <dir>`).
 
 ## Install on a Mac (unsigned)
 

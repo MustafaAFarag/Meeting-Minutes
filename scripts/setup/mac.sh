@@ -1,0 +1,358 @@
+#!/bin/bash
+# Meeting Notes setup for macOS. Safe to run again: it updates in place and never touches
+# your notes or your My Meetings page address. Works with the bash 3.2 that ships with macOS.
+#
+#   bash scripts/setup/mac.sh --name "Full Name" [--model small|turbo] [--skip-page] [--skip-launch]
+#                             [--release-base <url-or-dir>]
+#
+# Last line of output: SETUP_RESULT {json}
+set -euo pipefail
+
+DEFAULT_BASE="https://github.com/MustafaAFarag/Meeting-Minutes/releases/latest/download"
+MODEL_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
+TOTAL=8
+
+NAME=""
+MODEL=""
+SKIP_PAGE=0
+SKIP_LAUNCH=0
+RELEASE_BASE="$DEFAULT_BASE"
+WHISPER_CLI_OVERRIDE=""   # hidden, for tests
+WHISPER_MODEL_OVERRIDE="" # hidden, for tests
+
+WARN_JSON=""
+STEP=0
+WORK_DIR=""
+MOUNT_DIR=""
+
+cleanup() {
+  if [ -n "$MOUNT_DIR" ]; then
+    hdiutil detach "$MOUNT_DIR" -quiet >/dev/null 2>&1 || hdiutil detach "$MOUNT_DIR" -force -quiet >/dev/null 2>&1 || true
+    MOUNT_DIR=""
+  fi
+  if [ -n "$WORK_DIR" ]; then rm -rf "$WORK_DIR"; fi
+}
+trap cleanup EXIT
+
+json_str() {
+  printf '%s' "$1" | tr '\t\r\n' '   ' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+
+toml_str() {
+  printf '"%s"' "$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
+}
+
+step() {
+  STEP=$((STEP + 1))
+  printf '[%d/%d] %s\n' "$STEP" "$TOTAL" "$1"
+}
+
+warn() {
+  printf 'WARNING: %s\n' "$1"
+  if [ -n "$WARN_JSON" ]; then WARN_JSON="$WARN_JSON,"; fi
+  WARN_JSON="$WARN_JSON\"$(json_str "$1")\""
+}
+
+die() {
+  printf 'ERROR: %s\n' "$1" >&2
+  printf 'SETUP_RESULT {"ok":false,"error":"%s"}\n' "$(json_str "$1")"
+  exit 1
+}
+
+usage() {
+  cat <<'USAGE'
+Usage: bash scripts/setup/mac.sh --name "Full Name" [options]
+  --name "Full Name"        the person's full name (asked once; kept from the old config on re-runs)
+  --model small|turbo       speech model (default: turbo on Apple Silicon, small on Intel)
+  --skip-page               do not create the My Meetings page
+  --skip-launch             do not start the widget
+  --release-base <url|dir>  where the release files are (default: GitHub releases/latest/download)
+USAGE
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --name) [ "$#" -ge 2 ] || die "--name needs a value."; NAME="$2"; shift 2 ;;
+    --name=*) NAME="${1#--name=}"; shift ;;
+    --model) [ "$#" -ge 2 ] || die "--model needs small or turbo."; MODEL="$2"; shift 2 ;;
+    --model=*) MODEL="${1#--model=}"; shift ;;
+    --skip-page) SKIP_PAGE=1; shift ;;
+    --skip-launch) SKIP_LAUNCH=1; shift ;;
+    --release-base) [ "$#" -ge 2 ] || die "--release-base needs a value."; RELEASE_BASE="$2"; shift 2 ;;
+    --release-base=*) RELEASE_BASE="${1#--release-base=}"; shift ;;
+    --whisper-cli) [ "$#" -ge 2 ] || die "--whisper-cli needs a value."; WHISPER_CLI_OVERRIDE="$2"; shift 2 ;;
+    --whisper-model) [ "$#" -ge 2 ] || die "--whisper-model needs a value."; WHISPER_MODEL_OVERRIDE="$2"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) die "Unknown option $1. Run with --help to see the options." ;;
+  esac
+done
+RELEASE_BASE="${RELEASE_BASE%/}"
+
+case "$MODEL" in
+  ""|small|turbo) ;;
+  *) die "--model must be small or turbo." ;;
+esac
+
+# download <url> <dest>: writes to <dest>.part first, so a broken download never looks finished.
+download() {
+  rm -f "$2.part"
+  curl -fsSL --retry 3 --retry-delay 3 -o "$2.part" "$1" ||
+    die "Could not download $1. Check the internet connection, then run this script again."
+  mv -f "$2.part" "$2"
+}
+
+# fetch_release <file name> <dest>: from the release base (a URL or a local folder).
+fetch_release() {
+  if [ -d "$RELEASE_BASE" ]; then
+    [ -f "$RELEASE_BASE/$1" ] || die "$RELEASE_BASE has no file named $1."
+    cp "$RELEASE_BASE/$1" "$2.part"
+    mv -f "$2.part" "$2"
+  else
+    download "$RELEASE_BASE/$1" "$2"
+  fi
+}
+
+file_size() {
+  wc -c <"$1" | tr -d ' '
+}
+
+# Prints the whisper-cli that is already installed, or nothing.
+find_whisper() {
+  local c
+  for c in /opt/homebrew/bin/whisper-cli /usr/local/bin/whisper-cli "$(command -v whisper-cli 2>/dev/null || true)"; do
+    if [ -n "$c" ] && [ -x "$c" ]; then printf '%s' "$c"; return 0; fi
+  done
+  return 0
+}
+
+# Prints the brew executable, or nothing.
+find_brew() {
+  local c
+  for c in "$(command -v brew 2>/dev/null || true)" /opt/homebrew/bin/brew /usr/local/bin/brew; do
+    if [ -n "$c" ] && [ -x "$c" ]; then printf '%s' "$c"; return 0; fi
+  done
+  return 0
+}
+
+# ---------------------------------------------------------------- 1. checks
+step "Checking this computer"
+[ "$(uname -s)" = "Darwin" ] || die "This script is for a Mac. Use linux.sh on Linux or windows.ps1 on Windows."
+command -v curl >/dev/null 2>&1 || die "curl is missing. This Mac looks broken; ask the developer."
+
+MACOS_VERSION="$(sw_vers -productVersion 2>/dev/null || echo 0.0)"
+MACOS_MAJOR="${MACOS_VERSION%%.*}"
+MACOS_MINOR="$(printf '%s' "$MACOS_VERSION" | cut -d. -f2)"
+MACOS_MINOR="${MACOS_MINOR:-0}"
+if [ "$MACOS_MAJOR" -lt 14 ] || { [ "$MACOS_MAJOR" -eq 14 ] && [ "$MACOS_MINOR" -lt 2 ]; }; then
+  warn "macOS $MACOS_VERSION is older than 14.2: the other side of a call cannot be recorded (only the microphone). Update macOS to fix this."
+fi
+
+APPLE_SILICON=0
+if [ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" = "1" ]; then APPLE_SILICON=1; fi
+if [ -z "$MODEL" ]; then
+  if [ "$APPLE_SILICON" -eq 1 ]; then MODEL="turbo"; else MODEL="small"; fi
+fi
+
+CLAUDE=""
+if command -v claude >/dev/null 2>&1; then
+  CLAUDE="$(command -v claude)"
+else
+  for c in "$HOME/.local/bin/claude" "$HOME/.claude/local/claude" /opt/homebrew/bin/claude /usr/local/bin/claude "$HOME/.npm-global/bin/claude"; do
+    if [ -x "$c" ]; then CLAUDE="$c"; break; fi
+  done
+fi
+[ -n "$CLAUDE" ] || die "Claude Code is not installed. Install it from https://claude.com/claude-code, log in, then run this script again."
+
+AUTH_OUT=""
+AUTH_OK=1
+AUTH_OUT="$("$CLAUDE" auth status 2>&1)" || AUTH_OK=0
+if printf '%s' "$AUTH_OUT" | grep -Eq '"loggedIn"[[:space:]]*:[[:space:]]*false'; then AUTH_OK=0; fi
+if [ "$AUTH_OK" -eq 0 ]; then
+  if [ "$SKIP_PAGE" -eq 1 ]; then
+    warn "Claude Code is not logged in. Run 'claude' once and sign in before the first recording."
+  else
+    die "Claude Code is not logged in. Ask the user to run 'claude' in Terminal and sign in, then run this script again."
+  fi
+fi
+CODEX="$(command -v codex 2>/dev/null || true)"
+
+# Whisper needs Homebrew only when it is not installed yet. Check now, before the big downloads.
+BREW=""
+if [ -z "$WHISPER_CLI_OVERRIDE" ] && [ -z "$(find_whisper)" ]; then
+  BREW="$(find_brew)"
+  [ -n "$BREW" ] || die "Homebrew is not installed. Ask the user to install it from https://brew.sh (it asks for their Mac password), then run this script again."
+fi
+
+CONFIG_DIR="$HOME/Library/Application Support/meeting-notes"
+CONFIG="$CONFIG_DIR/config.toml"
+BIN_DIR="$HOME/.local/bin"
+MN="$BIN_DIR/mn"
+mkdir -p "$CONFIG_DIR" "$BIN_DIR"
+
+OLD_NOTES_LINE=""
+OLD_NAME_LINE=""
+if [ -f "$CONFIG" ]; then
+  OLD_NOTES_LINE="$(grep -m1 -E '^notes_dir[[:space:]]*=' "$CONFIG" || true)"
+  OLD_NAME_LINE="$(grep -m1 -E '^my_name[[:space:]]*=' "$CONFIG" || true)"
+fi
+if [ -z "$NAME" ] && [ -z "$OLD_NAME_LINE" ]; then
+  die "The person's full name is missing. Ask the user for their full name and run this script again with --name \"Full Name\"."
+fi
+
+WORK_DIR="$(mktemp -d)"
+
+# ---------------------------------------------------------------- 2. app
+step "Installing the Meeting Notes app (about 1 minute)"
+fetch_release "MeetingNotes-macos.dmg" "$WORK_DIR/MeetingNotes-macos.dmg"
+MOUNT_DIR="$WORK_DIR/mount"
+mkdir -p "$MOUNT_DIR"
+hdiutil attach -nobrowse -readonly -mountpoint "$MOUNT_DIR" "$WORK_DIR/MeetingNotes-macos.dmg" >/dev/null ||
+  die "Could not open the downloaded disk image. Run this script again."
+APP_SRC="$(find "$MOUNT_DIR" -maxdepth 1 -name '*.app' | head -n 1)"
+[ -n "$APP_SRC" ] || die "The disk image has no app inside. Run this script again."
+APP_BASE="$(basename "$APP_SRC")"
+
+if [ -w /Applications ]; then
+  APP_DIR="/Applications"
+else
+  APP_DIR="$HOME/Applications"
+  mkdir -p "$APP_DIR"
+fi
+APP="$APP_DIR/$APP_BASE"
+
+# Quit a running copy so the files can be replaced.
+osascript -e "tell application \"${APP_BASE%.app}\" to quit" >/dev/null 2>&1 || true
+sleep 1
+pkill -f "$APP_BASE/Contents/MacOS" >/dev/null 2>&1 || true
+for other in "/Applications/$APP_BASE" "$HOME/Applications/$APP_BASE"; do
+  if [ "$other" != "$APP" ] && [ -d "$other" ]; then rm -rf "$other" 2>/dev/null || true; fi
+done
+rm -rf "$APP"
+ditto "$APP_SRC" "$APP"
+hdiutil detach "$MOUNT_DIR" -quiet >/dev/null 2>&1 || hdiutil detach "$MOUNT_DIR" -force -quiet >/dev/null 2>&1 || true
+MOUNT_DIR=""
+# The app is unsigned: remove the quarantine flag so Gatekeeper does not block it.
+xattr -dr com.apple.quarantine "$APP" >/dev/null 2>&1 || true
+
+# ---------------------------------------------------------------- 3. mn
+step "Installing the command-line tool (mn)"
+fetch_release "mn-macos" "$MN"
+chmod +x "$MN"
+xattr -d com.apple.quarantine "$MN" >/dev/null 2>&1 || true
+codesign --force --sign - "$MN" >/dev/null 2>&1 || true
+"$MN" --version >/dev/null 2>&1 || die "The downloaded mn tool does not run on this Mac."
+
+# ---------------------------------------------------------------- 4. whisper
+step "Installing whisper (the speech-to-text engine)"
+WHISPER=""
+if [ -n "$WHISPER_CLI_OVERRIDE" ]; then
+  [ -x "$WHISPER_CLI_OVERRIDE" ] || die "--whisper-cli $WHISPER_CLI_OVERRIDE is not an executable file."
+  WHISPER="$WHISPER_CLI_OVERRIDE"
+else
+  WHISPER="$(find_whisper)"
+  if [ -n "$WHISPER" ]; then
+    echo "Already installed: $WHISPER"
+  else
+    echo "Running: brew install whisper-cpp (a few minutes)..."
+    HOMEBREW_NO_ENV_HINTS=1 "$BREW" install whisper-cpp ||
+      die "brew could not install whisper-cpp. Run '$BREW install whisper-cpp' in Terminal, fix what it says, then run this script again."
+    WHISPER="$("$BREW" --prefix)/bin/whisper-cli"
+    [ -x "$WHISPER" ] || die "brew installed whisper-cpp but $WHISPER is missing. Show this message to the developer."
+  fi
+fi
+"$WHISPER" --help >/dev/null 2>&1 || warn "whisper-cli at $WHISPER did not start. Run 'brew reinstall whisper-cpp' or ask the developer."
+
+# ---------------------------------------------------------------- 5. model
+step "Getting the speech model"
+if [ -n "$WHISPER_MODEL_OVERRIDE" ]; then
+  [ -f "$WHISPER_MODEL_OVERRIDE" ] || die "--whisper-model $WHISPER_MODEL_OVERRIDE does not exist."
+  WMODEL="$WHISPER_MODEL_OVERRIDE"
+else
+  if [ "$MODEL" = "turbo" ]; then
+    MODEL_FILE="ggml-large-v3-turbo-q5_0.bin"; MODEL_MIN=520000000; MODEL_MB=574
+  else
+    MODEL_FILE="ggml-small.bin"; MODEL_MIN=440000000; MODEL_MB=488
+  fi
+  mkdir -p "$CONFIG_DIR/models"
+  WMODEL="$CONFIG_DIR/models/$MODEL_FILE"
+  if [ -f "$WMODEL" ] && [ "$(file_size "$WMODEL")" -ge "$MODEL_MIN" ]; then
+    echo "Already downloaded: $WMODEL"
+  else
+    echo "Downloading $MODEL_FILE (about $MODEL_MB MB, a few minutes)..."
+    download "$MODEL_URL/$MODEL_FILE" "$WMODEL"
+    [ "$(file_size "$WMODEL")" -ge "$MODEL_MIN" ] || die "The speech model download is incomplete. Run this script again."
+  fi
+fi
+
+# ---------------------------------------------------------------- 6. config
+step "Writing the config"
+if [ -n "$OLD_NOTES_LINE" ]; then
+  NOTES_LINE="$OLD_NOTES_LINE"
+  NOTES_DIR="$(printf '%s' "$OLD_NOTES_LINE" | sed -E "s/^notes_dir[[:space:]]*=[[:space:]]*[\"']//; s/[\"'][[:space:]]*\$//")"
+else
+  NOTES_DIR="$HOME/MeetingNotes"
+  mkdir -p "$NOTES_DIR"
+  NOTES_LINE="notes_dir = $(toml_str "$NOTES_DIR")"
+fi
+if [ -n "$NAME" ]; then NAME_LINE="my_name = $(toml_str "$NAME")"; else NAME_LINE="$OLD_NAME_LINE"; fi
+
+if [ -f "$CONFIG" ]; then cp -f "$CONFIG" "$CONFIG.bak"; fi
+{
+  echo "# Written by the Meeting Notes setup script. Re-running setup rewrites this file (the old one is kept as config.toml.bak)."
+  echo "$NOTES_LINE"
+  echo "whisper_cli = $(toml_str "$WHISPER")"
+  echo "whisper_model = $(toml_str "$WMODEL")"
+  echo "claude_cli = $(toml_str "$CLAUDE")"
+  if [ -n "$CODEX" ]; then echo "codex_cli = $(toml_str "$CODEX")"; fi
+  if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then echo "claude_config_dir = $(toml_str "$CLAUDE_CONFIG_DIR")"; fi
+  echo "$NAME_LINE"
+  echo 'language = "auto"'
+} >"$CONFIG.new"
+mv -f "$CONFIG.new" "$CONFIG"
+"$MN" config >/dev/null 2>&1 || die "The config file at $CONFIG is not valid. Show this path to the developer."
+
+# ---------------------------------------------------------------- 7. page
+step "Creating the My Meetings page (1 to 2 minutes)"
+URL_FILE="$CONFIG_DIR/artifact_url.txt"
+PAGE_URL=""
+if [ "$SKIP_PAGE" -eq 1 ]; then
+  echo "Skipped (--skip-page)."
+else
+  PAGE_LOG="$WORK_DIR/init-page.log"
+  PAGE_OK=1
+  "$MN" init-page >"$PAGE_LOG" 2>&1 || PAGE_OK=0
+  PAGE_URL="$(grep '"state":"published"' "$PAGE_LOG" | tail -n 1 | sed -E 's/.*"url":"([^"]*)".*/\1/' || true)"
+  if [ "$PAGE_OK" -eq 0 ] || [ -z "$PAGE_URL" ]; then
+    PAGE_ERR="$(grep -E '"state":"error"|^error:' "$PAGE_LOG" | tail -n 1 || true)"
+    warn "mn init-page failed: ${PAGE_ERR:-no message}. Run '$MN init-page' again and show this error to the developer."
+    PAGE_URL=""
+  fi
+fi
+if [ -z "$PAGE_URL" ] && [ -f "$URL_FILE" ]; then
+  PAGE_URL="$(head -n 1 "$URL_FILE" | tr -d '\r')"
+fi
+
+# ---------------------------------------------------------------- 8. launch
+step "Starting the widget"
+LAUNCHED=false
+if [ "$SKIP_LAUNCH" -eq 1 ]; then
+  echo "Skipped (--skip-launch)."
+else
+  if open "$APP" >/dev/null 2>&1; then
+    sleep 4
+    if pgrep -f "$APP_BASE/Contents/MacOS" >/dev/null 2>&1; then
+      LAUNCHED=true
+      echo "The widget is running. It turns on start-at-login by itself on the first run."
+    else
+      warn "The widget did not stay open. Open it from $APP_DIR (right-click, Open) and read any macOS message."
+    fi
+  else
+    warn "macOS would not open the app. Right-click it in $APP_DIR, choose Open, then Open again."
+  fi
+fi
+
+if [ -n "$PAGE_URL" ]; then PAGE_JSON="\"$(json_str "$PAGE_URL")\""; else PAGE_JSON="null"; fi
+printf 'SETUP_RESULT {"ok":true,"os":"macos","config":"%s","artifact_url_file":"%s","mn":"%s","app":"%s","whisper_cli":"%s","whisper_model":"%s","notes_dir":"%s","claude_cli":"%s","page_url":%s,"launched":%s,"warnings":[%s]}\n' \
+  "$(json_str "$CONFIG")" "$(json_str "$URL_FILE")" "$(json_str "$MN")" "$(json_str "$APP")" \
+  "$(json_str "$WHISPER")" "$(json_str "$WMODEL")" "$(json_str "$NOTES_DIR")" "$(json_str "$CLAUDE")" \
+  "$PAGE_JSON" "$LAUNCHED" "$WARN_JSON"
