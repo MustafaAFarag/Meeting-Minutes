@@ -1,0 +1,84 @@
+{
+  "title": "MeetingCard",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "title",
+    "title_source",
+    "project",
+    "client",
+    "attendees",
+    "related_links",
+    "summary",
+    "decisions",
+    "deliverables",
+    "my_todos",
+    "waiting_on"
+  ],
+  "properties": {
+    "title": { "type": "string", "description": "Meeting name. The calendar event subject when one matches." },
+    "title_source": { "type": "string", "enum": ["calendar", "transcript"] },
+    "project": { "type": ["string", "null"], "description": "Project or product name, e.g. 'Product leaflets'. null if unclear." },
+    "client": { "type": ["string", "null"], "description": "Client company, e.g. 'Acme Pharma'. null for internal meetings." },
+    "attendees": { "type": "array", "items": { "type": "string" } },
+    "related_links": {
+      "type": "array",
+      "description": "Teams chat or SharePoint/OneDrive files tied to this meeting. Only real URLs returned by tools.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "url"],
+        "properties": { "title": { "type": "string" }, "url": { "type": "string" } }
+      }
+    },
+    "summary": {
+      "type": "array",
+      "description": "Up to 5 short plain-English lines: what it was about and the outcome.",
+      "items": { "type": "string" }
+    },
+    "decisions": { "type": "array", "items": { "type": "string" } },
+    "deliverables": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["what", "owner", "due", "status"],
+        "properties": {
+          "what": { "type": "string" },
+          "owner": { "type": ["string", "null"] },
+          "due": { "type": ["string", "null"], "description": "YYYY-MM-DD, resolved from phrases like 'by Friday'. null if no date was said." },
+          "status": { "type": "string", "enum": ["new", "in progress", "in client review", "done", "blocked"] }
+        }
+      }
+    },
+    "my_todos": {
+      "type": "array",
+      "description": "Things the PM (the 'Me' speaker) must do.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["text", "due", "at"],
+        "properties": {
+          "text": { "type": "string", "description": "Starts with a verb. One action." },
+          "due": { "type": ["string", "null"], "description": "YYYY-MM-DD or null" },
+          "at": { "type": "string", "description": "Transcript time where it was said, HH:MM:SS" }
+        }
+      }
+    },
+    "waiting_on": {
+      "type": "array",
+      "description": "Things other people (team or client) promised to do.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["who", "text", "due", "at"],
+        "properties": {
+          "who": { "type": "string" },
+          "text": { "type": "string" },
+          "due": { "type": ["string", "null"] },
+          "at": { "type": "string" }
+        }
+      }
+    }
+  }
+}

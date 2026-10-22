@@ -1,0 +1,87 @@
+{
+  "title": "Weekly playbook update",
+  "title_source": "transcript",
+  "project": "Playbook",
+  "client": null,
+  "attendees": [],
+  "related_links": [],
+  "summary": [
+    "Legal will review the full playbook before the client; client review moves to November 5.",
+    "The CMDB section is nearly finished and needs new portal screenshots, due October 23.",
+    "The PM will send the updated timeline today and arrange a legal review call for Monday.",
+    "The German leaflet translation is expected by October 30."
+  ],
+  "decisions": [
+    "Send the full playbook to legal before client review.",
+    "Move client review back one week to 2026-11-05."
+  ],
+  "deliverables": [
+    {
+      "what": "New portal screenshots",
+      "owner": "Team",
+      "due": "2026-10-23",
+      "status": "new"
+    },
+    {
+      "what": "Completed CMDB section",
+      "owner": "Team",
+      "due": null,
+      "status": "in progress"
+    },
+    {
+      "what": "Updated timeline sent to the client",
+      "owner": "PM",
+      "due": "2026-10-22",
+      "status": "new"
+    },
+    {
+      "what": "Legal review of the full playbook",
+      "owner": "Legal",
+      "due": "2026-10-26",
+      "status": "new"
+    },
+    {
+      "what": "Client review of the playbook",
+      "owner": "Client",
+      "due": "2026-11-05",
+      "status": "new"
+    },
+    {
+      "what": "German leaflet translation",
+      "owner": "Translation agency",
+      "due": "2026-10-30",
+      "status": "in progress"
+    }
+  ],
+  "my_todos": [
+    {
+      "text": "Send the updated timeline to the client this afternoon.",
+      "due": "2026-10-22",
+      "at": "00:04:46"
+    },
+    {
+      "text": "Book the legal review call for October 26.",
+      "due": null,
+      "at": "00:04:46"
+    },
+    {
+      "text": "Chase the translation agency on Wednesday if the translation has not arrived.",
+      "due": "2026-10-28",
+      "at": "00:06:30"
+    }
+  ],
+  "waiting_on": [
+    {
+      "who": "Team",
+      "text": "Provide screenshots from the new portal.",
+      "due": "2026-10-23",
+      "at": "00:01:09"
+    },
+    {
+      "who": "Translation agency",
+      "text": "Return the German leaflet translation, expected by the end of next week.",
+      "due": "2026-10-30",
+      "at": "00:06:10"
+    }
+  ]
+}
