@@ -411,35 +411,85 @@ fn settle(window: &Window) {
     state.update_prefs(|p| p.pos = Some(saved));
 }
 
-fn show_window(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
-        app.state::<NotchState>()
-            .user_hidden
-            .store(false, Ordering::SeqCst);
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
+/// One line to stderr and to `<cache dir>/meeting-notes/widget.log`, so show/hide problems can be
+/// traced even when the widget was started at login with no terminal.
+fn log(msg: &str) {
+    let line = format!(
+        "{} {msg}",
+        chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f")
+    );
+    eprintln!("{line}");
+    if let Some(dir) = dirs::cache_dir().map(|d| d.join("meeting-notes")) {
+        let _ = std::fs::create_dir_all(&dir);
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join("widget.log"))
+        {
+            use std::io::Write;
+            let _ = writeln!(f, "{line}");
+        }
     }
+}
+
+/// What the window says about itself, for the log.
+fn describe_window(window: &Window) -> String {
+    let pos = window
+        .outer_position()
+        .map(|p| format!("{},{}", p.x, p.y))
+        .unwrap_or_else(|_| "?".into());
+    let size = window
+        .outer_size()
+        .map(|s| format!("{}x{}", s.width, s.height))
+        .unwrap_or_else(|_| "?".into());
+    let visible = window
+        .is_visible()
+        .map_or_else(|_| "?".into(), |v| v.to_string());
+    format!("pos={pos} size={size} visible={visible}")
+}
+
+fn show_window(app: &AppHandle) {
+    let Some(webview) = app.get_webview_window(WINDOW_LABEL) else {
+        return;
+    };
+    let window = webview.as_ref().window();
+    let state = app.state::<NotchState>();
+    state.user_hidden.store(false, Ordering::SeqCst);
+    let _ = window.show();
+    let _ = window.unminimize();
+    // The window manager may put a re-shown window anywhere, so put it back on its edge.
+    place(&window, &state);
+    log(&format!("show: {}", describe_window(&window)));
+    // Showing is asynchronous on X11: check again once it has happened.
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(200));
+        ensure_placed(&window);
+        log(&format!("show settled: {}", describe_window(&window)));
+    });
 }
 
 fn hide_window(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
+    if let Some(webview) = app.get_webview_window(WINDOW_LABEL) {
         app.state::<NotchState>()
             .user_hidden
             .store(true, Ordering::SeqCst);
-        let _ = window.hide();
+        let _ = webview.hide();
+        log(&format!(
+            "hide: {}",
+            describe_window(&webview.as_ref().window())
+        ));
     }
 }
 
+/// Decides by our own flag, not by `is_visible()`: on X11 that answer lags behind a show or
+/// hide, so a quick second press used to read the old state and do the wrong thing.
 fn toggle_window(app: &AppHandle) {
-    let visible = app
-        .get_webview_window(WINDOW_LABEL)
-        .and_then(|w| w.is_visible().ok())
-        .unwrap_or(false);
-    if visible {
-        hide_window(app);
-    } else {
+    let hidden = app.state::<NotchState>().user_hidden.load(Ordering::SeqCst);
+    log(&format!("Ctrl+Alt+M: hidden={hidden}"));
+    if hidden {
         show_window(app);
+    } else {
+        hide_window(app);
     }
 }
 
