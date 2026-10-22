@@ -18,15 +18,15 @@ jobs:
           - name: macos
             os: macos-14
             tauri_args: --target universal-apple-darwin
-            bundle_glob: app/src-tauri/target/**/release/bundle/dmg/*.dmg
+            bundle_path: '*/release/bundle/dmg/*.dmg'
           - name: windows
             os: windows-latest
             tauri_args: ""
-            bundle_glob: app/src-tauri/target/**/release/bundle/nsis/*.exe
+            bundle_path: '*/release/bundle/nsis/*.exe'
           - name: linux
             os: ubuntu-22.04
             tauri_args: ""
-            bundle_glob: app/src-tauri/target/**/release/bundle/appimage/*.AppImage
+            bundle_path: '*/release/bundle/appimage/*.AppImage'
     runs-on: ${{ matrix.os }}
     # A full build takes 20-35 min. Without a limit a hung step runs for GitHub's 6 h default.
     timeout-minutes: 75
@@ -178,12 +178,12 @@ jobs:
       # create the My Meetings page and to check the install.
       - name: Collect files with fixed names
         run: |
-          # Without globstar, `**` matches exactly one folder, so target/release/... never matched.
-          # nullglob + the check below turn "no file" into a clear error instead of a literal path.
-          shopt -s globstar nullglob
-          bundles=( ${{ matrix.bundle_glob }} )
+          # find, not a ** glob: globstar needs bash 4+, and the macOS runner's bash may be 3.2.
+          # The bundle is under target/release/... (Windows, Linux) or target/<triple>/release/... (macOS).
+          bundles=()
+          while IFS= read -r f; do bundles+=("$f"); done < <(find app/src-tauri/target -maxdepth 6 -path '${{ matrix.bundle_path }}' -type f)
           if [ "${#bundles[@]}" -ne 1 ]; then
-            echo "::error::Expected exactly 1 file for ${{ matrix.bundle_glob }}, found ${#bundles[@]}: ${bundles[*]}"
+            echo "::error::Expected exactly 1 file matching ${{ matrix.bundle_path }}, found ${#bundles[@]}: ${bundles[*]}"
             find app/src-tauri/target -maxdepth 6 -path '*/release/bundle/*' -type f | head -n 20
             exit 1
           fi
