@@ -11,3 +11,4 @@ docs/*.pdf
 # Tauri widget
 app/src-tauri/target
 app/src-tauri/gen
+app/src-tauri/binaries/
