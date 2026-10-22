@@ -4,6 +4,7 @@
 use std::cell::RefCell;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
@@ -55,9 +56,15 @@ fn only_session_dir(notes: &Path) -> Option<PathBuf> {
         .find(|p| p.is_dir())
 }
 
+/// `kill -0` instead of /proc, which macOS does not have.
 fn pid_is_gone(pid_file: &Path) -> bool {
     let pid = fs::read_to_string(pid_file).unwrap();
-    !Path::new("/proc").join(pid.trim()).exists()
+    !Command::new("sh")
+        .args(["-c", &format!("kill -0 {}", pid.trim())])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap()
+        .success()
 }
 
 #[test]
@@ -337,13 +344,18 @@ fn odd_chunk_boundaries_do_not_shift_samples() {
 }
 
 /// True if a process runs exactly `sh -c <script>` or, once the shell has exec'd, `sleep <secs>`.
+/// Uses `ps`, not /proc, so it also runs on macOS.
 fn capture_running(script: &str, sleep_secs: &str) -> bool {
-    let as_sh = format!("sh\0-c\0{script}\0").into_bytes();
-    let as_sleep = format!("sleep\0{sleep_secs}\0").into_bytes();
-    fs::read_dir("/proc")
-        .unwrap()
-        .filter_map(|e| fs::read(e.ok()?.path().join("cmdline")).ok())
-        .any(|cmdline| cmdline == as_sh || cmdline == as_sleep)
+    let as_sh = format!("sh -c {script}");
+    let as_sleep = format!("sleep {sleep_secs}");
+    let out = Command::new("ps")
+        .args(["-A", "-o", "args="])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::trim)
+        .any(|args| args == as_sh || args == as_sleep)
 }
 
 #[test]

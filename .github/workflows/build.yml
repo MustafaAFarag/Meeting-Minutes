@@ -109,6 +109,8 @@ jobs:
       # create the My Meetings page and to check the install.
       - name: Collect files with fixed names
         run: |
+          # Without globstar, `**` matches exactly one folder, so target/release/... never matched.
+          shopt -s globstar
           mkdir -p out
           case "${{ matrix.name }}" in
             macos)
