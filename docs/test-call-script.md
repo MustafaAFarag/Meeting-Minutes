@@ -9,7 +9,7 @@
 1. In Outlook, create a Teams meeting called **"Meeting notes pilot test"** for now, and invite your colleague. Claude uses this calendar entry to name the meeting and list the people in it.
 2. Put on **headphones**. Without them the mic records your colleague a second time.
 3. Join the call. Then, in a terminal, run:
-   `"/mnt/ssd/CTCHealth/Project Management Aritfact-Skill-Github/core/target/debug/mn" run`
+   `mn run`
 4. Wait until you see lines starting with `{"state":"recording"`, then start reading.
 
 Read the lines naturally. You don't need to match them word for word.
@@ -91,4 +91,4 @@ Then open https://claude.ai/artifact/REDACTED. The new meeting appears within 60
 
 - **It never stops by itself:** press Ctrl+C. It still transcribes and publishes. Tell me what `me_db` showed in the last status lines.
 - **The terminal shows `"state":"error"`:** copy that line to me.
-- **The page doesn't show the meeting:** run `mn publish` (same folder as the `mn run` command above), then reload.
+- **The page doesn't show the meeting:** run `mn publish`, then reload.
