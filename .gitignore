@@ -4,3 +4,4 @@ target/
 node_modules/
 .delegate/
 .local-samples/
+artifact/ARTIFACT_URL.txt
