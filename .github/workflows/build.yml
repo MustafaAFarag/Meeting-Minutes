@@ -183,10 +183,10 @@ jobs:
           # find, not a ** glob: globstar needs bash 4+, and the macOS runner's bash may be 3.2.
           # The bundle is under target/release/... (Windows, Linux) or target/<triple>/release/... (macOS).
           bundles=()
-          while IFS= read -r f; do bundles+=("$f"); done < <(find app/src-tauri/target -maxdepth 6 -path '${{ matrix.bundle_path }}' -type f)
+          while IFS= read -r f; do bundles+=("$f"); done < <(/usr/bin/find app/src-tauri/target -maxdepth 6 -path '${{ matrix.bundle_path }}' -type f)
           if [ "${#bundles[@]}" -ne 1 ]; then
             echo "::error::Expected exactly 1 file matching ${{ matrix.bundle_path }}, found ${#bundles[@]}: ${bundles[*]}"
-            find app/src-tauri/target -maxdepth 6 -path '*/release/bundle/*' -type f | head -n 20
+            /usr/bin/find app/src-tauri/target -maxdepth 6 -path '*/release/bundle/*' -type f | head -n 20
             exit 1
           fi
           mkdir -p out
