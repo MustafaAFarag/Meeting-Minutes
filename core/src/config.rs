@@ -1,10 +1,15 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(not(any(windows, target_os = "macos")))]
 use std::process::Command;
 use std::thread;
 
-use anyhow::{bail, Context, Result};
+#[cfg(not(any(windows, target_os = "macos")))]
+use anyhow::bail;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+
+use crate::capture::Track;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -30,9 +35,12 @@ pub struct Config {
     /// Silero VAD model for whisper's `--vad`. Off by default: it dropped real speech in testing.
     pub vad_model: Option<PathBuf>,
     /// argv of a command that writes raw s16le 16 kHz mono PCM to stdout (the mic).
-    /// `None` means computed from `pactl get-default-source` at runtime.
+    /// `None` means the per-OS default: Linux computes it from `pactl get-default-source`;
+    /// Windows and macOS run this executable as `capture mic`.
     pub capture_me: Option<Vec<String>>,
-    /// Same, for system audio. `None` means computed from `pactl get-default-sink` at runtime.
+    /// Same, for system audio. `None` means the per-OS default: Linux computes it from
+    /// `pactl get-default-sink`; Windows runs `capture system`; macOS runs the `mn-audiotap`
+    /// helper next to this executable.
     pub capture_them: Option<Vec<String>>,
     /// The Claude Code CLI used for the card and the publish step.
     pub claude_cli: PathBuf,
@@ -50,7 +58,11 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             notes_dir: home_dir().join("MeetingNotes"),
-            whisper_cli: PathBuf::from("whisper-cli"),
+            whisper_cli: PathBuf::from(if cfg!(windows) {
+                "whisper-cli.exe"
+            } else {
+                "whisper-cli"
+            }),
             whisper_model: None,
             silence_threshold_db: None,
             speech_margin_db: None,
@@ -117,22 +129,92 @@ impl Config {
     pub fn capture_me_argv(&self) -> Result<Vec<String>> {
         match &self.capture_me {
             Some(argv) => Ok(argv.clone()),
-            None => Ok(default_capture_me(&pactl_default(
-                "get-default-source",
-                "capture_me",
-            )?)),
+            None => platform_capture_me(),
         }
     }
 
     pub fn capture_them_argv(&self) -> Result<Vec<String>> {
         match &self.capture_them {
             Some(argv) => Ok(argv.clone()),
-            None => {
-                let sink = pactl_default("get-default-sink", "capture_them")?;
-                Ok(default_capture_them(&sink))
-            }
+            None => platform_capture_them(),
         }
     }
+
+    /// The comment `mn config` prints for a capture command that is not set, `None` when it
+    /// is set. Linux only names the pactl query (running it here would make `mn config` fail
+    /// without PulseAudio); Windows and macOS print the computed command.
+    pub fn capture_comment(&self, track: Track) -> Option<String> {
+        let (key, set, linux_query) = match track {
+            Track::Me => ("capture_me", &self.capture_me, "get-default-source"),
+            Track::Them => ("capture_them", &self.capture_them, "get-default-sink"),
+        };
+        if set.is_some() {
+            return None;
+        }
+        if cfg!(any(windows, target_os = "macos")) {
+            let argv = match track {
+                Track::Me => self.capture_me_argv(),
+                Track::Them => self.capture_them_argv(),
+            };
+            return Some(match argv {
+                Ok(argv) => format!("# {key}: default is {argv:?}"),
+                Err(err) => format!("# {key}: no default ({err:#})"),
+            });
+        }
+        Some(format!(
+            "# {key}: computed at runtime from `pactl {linux_query}`"
+        ))
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn platform_capture_me() -> Result<Vec<String>> {
+    Ok(default_capture_me(&pactl_default(
+        "get-default-source",
+        "capture_me",
+    )?))
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn platform_capture_them() -> Result<Vec<String>> {
+    let sink = pactl_default("get-default-sink", "capture_them")?;
+    Ok(default_capture_them(&sink))
+}
+
+#[cfg(any(windows, target_os = "macos"))]
+fn platform_capture_me() -> Result<Vec<String>> {
+    Ok(native_capture_argv(&current_exe()?, "mic"))
+}
+
+#[cfg(windows)]
+fn platform_capture_them() -> Result<Vec<String>> {
+    Ok(native_capture_argv(&current_exe()?, "system"))
+}
+
+#[cfg(target_os = "macos")]
+fn platform_capture_them() -> Result<Vec<String>> {
+    Ok(audiotap_argv(&current_exe()?))
+}
+
+#[cfg(any(windows, target_os = "macos"))]
+fn current_exe() -> Result<PathBuf> {
+    std::env::current_exe().context("could not find this executable to start the capture command")
+}
+
+/// `<exe> capture <source>`: this program's own built-in capture, so the same default works
+/// from `mn` and from the widget (which has no `mn` next to it).
+pub fn native_capture_argv(exe: &Path, source: &str) -> Vec<String> {
+    vec![
+        exe.to_string_lossy().into_owned(),
+        "capture".to_string(),
+        source.to_string(),
+    ]
+}
+
+/// The macOS system-audio helper, bundled next to the app executable.
+pub fn audiotap_argv(exe: &Path) -> Vec<String> {
+    let dir = exe.parent().unwrap_or(Path::new("."));
+    vec![dir.join("mn-audiotap").to_string_lossy().into_owned()]
 }
 
 pub fn default_capture_me(source: &str) -> Vec<String> {
@@ -161,6 +243,7 @@ fn parec_argv(device: &str) -> Vec<String> {
 }
 
 /// Runs `pactl <query>` (get-default-source or get-default-sink) and returns the device name.
+#[cfg(not(any(windows, target_os = "macos")))]
 fn pactl_default(query: &str, config_key: &str) -> Result<String> {
     let out = Command::new("pactl").arg(query).output().with_context(|| {
         format!("could not run `pactl {query}`; set {config_key} in the config to skip it")
