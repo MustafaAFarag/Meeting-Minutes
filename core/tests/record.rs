@@ -140,6 +140,26 @@ fn capture_processes_are_killed_when_recording_stops() {
 }
 
 #[test]
+fn capture_processes_get_sigterm_before_being_killed() {
+    let notes = tempfile::tempdir().unwrap();
+    let marker = notes.path().join("got-term");
+    let me = format!(
+        "trap 'echo term > \"{}\"; exit 0' TERM; while true; do head -c 3200 /dev/zero; sleep 0.1; done",
+        marker.display()
+    );
+    let cfg = config(notes.path(), &me, IDLE);
+    let opts = RecordOptions {
+        max_seconds: Some(1),
+        ..RecordOptions::default()
+    };
+    run(&cfg, &opts).0.unwrap();
+    assert!(
+        marker.exists(),
+        "the capture command must get SIGTERM so it can clean up"
+    );
+}
+
+#[test]
 fn stop_file_stops_with_user_reason() {
     let notes = tempfile::tempdir().unwrap();
     let cfg = config(notes.path(), IDLE, IDLE);

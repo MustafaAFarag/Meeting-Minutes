@@ -73,8 +73,29 @@ impl CaptureProcess {
     }
 }
 
+/// How long a capture command gets to exit by itself after SIGTERM before it is killed.
+#[cfg(unix)]
+const STOP_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
+
 impl Drop for CaptureProcess {
+    /// Asks the command to stop first (SIGTERM on Unix), so a helper such as mn-audiotap can
+    /// remove the audio devices it created, then kills it if it is still running.
     fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Ok(pid) = i32::try_from(self.child.id()) {
+            // SAFETY: kill(2) on our own child's pid; the child is not reaped yet, so the pid
+            // cannot have been reused.
+            unsafe {
+                libc::kill(pid, libc::SIGTERM);
+            }
+            let deadline = std::time::Instant::now() + STOP_GRACE;
+            while std::time::Instant::now() < deadline {
+                if matches!(self.child.try_wait(), Ok(Some(_))) {
+                    return;
+                }
+                thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
     }

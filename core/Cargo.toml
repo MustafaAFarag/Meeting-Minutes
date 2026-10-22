@@ -25,5 +25,8 @@ ctrlc = { version = "3", features = ["termination"] }
 [dev-dependencies]
 tempfile = "3"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 cpal = "0.15"
