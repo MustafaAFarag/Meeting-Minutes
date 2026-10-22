@@ -107,7 +107,7 @@ fn update_prompt(url: &str, files_json: &str) -> String {
 
 fn create_prompt(files_json: &str) -> String {
     format!(
-        "Publish ./index.html as a new artifact using the Artifact tool, unchanged, with capabilities {{\"db\":{{}},\"user\":{{}},\"downloads\":true}}, icon \"calendar\", title \"My Meetings\", and files {files_json}. Reply with only OK and the artifact URL on the next line, or the exact error."
+        "Publish ./index.html as a new artifact using the Artifact tool, unchanged, with capabilities {{\"db\":{{}},\"user\":{{}},\"downloads\":true,\"sample\":{{}}}}, icon \"calendar\", title \"My Meetings\", and files {files_json}. Reply with only OK and the artifact URL on the next line, or the exact error."
     )
 }
 

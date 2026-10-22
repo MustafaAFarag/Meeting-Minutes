@@ -262,7 +262,7 @@ fn first_run_creates_the_artifact_and_saves_its_url() {
     result.unwrap();
 
     let prompt = claude.call(1).argv[1].clone();
-    assert!(prompt.starts_with("Publish ./index.html as a new artifact using the Artifact tool, unchanged, with capabilities {\"db\":{},\"user\":{},\"downloads\":true}, icon \"calendar\", title \"My Meetings\", and files {"), "{prompt}");
+    assert!(prompt.starts_with("Publish ./index.html as a new artifact using the Artifact tool, unchanged, with capabilities {\"db\":{},\"user\":{},\"downloads\":true,\"sample\":{}}, icon \"calendar\", title \"My Meetings\", and files {"), "{prompt}");
     assert!(
         prompt.ends_with(
             "Reply with only OK and the artifact URL on the next line, or the exact error."
