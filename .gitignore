@@ -1,0 +1,4 @@
+target/
+*.wav
+.env
+node_modules/
