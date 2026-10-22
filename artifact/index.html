@@ -146,7 +146,12 @@ a { color: var(--ctl); text-underline-offset: 2px; }
 .row { width: 100%; text-align: left; background: var(--surface); border: 0; border-radius: 16px; padding: 8px 12px; display: block; }
 .row:hover, .row.sel { background: var(--sel); }
 .row.sel .chip, .row:hover .chip { background: var(--surface); }
+.row { cursor: pointer; }
 .row .rt { display: block; font-weight: 700; overflow-wrap: anywhere; }
+.row .tline { gap: 4px; }
+.row .pen { padding: 2px; }
+.row .pen svg { width: 13px; height: 13px; }
+.row .rename { font: 700 15px/1.3 var(--font-body); padding: 1px 6px; }
 .row .chips { margin-top: 4px; }
 .dhead { margin-bottom: 12px; }
 .dhead .chip { background: var(--surface); }
@@ -326,19 +331,21 @@ a { color: var(--ctl); text-underline-offset: 2px; }
   /* wide screens: compact row on the left, full detail on the right */
   function rowHtml(m, sel) {
     var h = headInfo(m);
-    return '<button class="row' + (sel ? " sel" : "") + '" data-select="' + esc(m.id) + '"><span class="rt">' + esc(titleOf(m)) + '</span><span class="meta">' + h.when + "</span>" +
-      (h.chips ? '<span class="chips">' + h.chips + "</span>" : "") + "</button>";
+    // A div, not a button, so the rename pen (a button) can sit next to the name inside it.
+    return '<div class="row' + (sel ? " sel" : "") + '" role="button" tabindex="0" data-select="' + esc(m.id) + '">' + titleHtml(m, "span") +
+      '<span class="meta">' + h.when + "</span>" + (h.chips ? '<span class="chips">' + h.chips + "</span>" : "") + "</div>";
   }
   var PEN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>';
   /* The title with a pen to rename it. tag "" = only the pen (narrow cards already show the title). */
   function titleHtml(m, tag) {
     if (editing === m.id) return '<div class="tline"><input class="rename" id="rename-input" data-rename="' + esc(m.id) + '" maxlength="120" aria-label="Meeting name"></div>';
     var pen = canWrite ? '<button class="pen" data-pen="' + esc(m.id) + '" title="Rename" aria-label="Rename meeting">' + PEN + "</button>" : "";
-    return '<div class="tline">' + (tag ? "<" + tag + ">" + esc(titleOf(m)) + "</" + tag + ">" : "") + pen + "</div>";
+    var name = tag ? "<" + tag + (tag === "span" ? ' class="rt"' : "") + ">" + esc(titleOf(m)) + "</" + tag + ">" : "";
+    return '<div class="tline">' + name + pen + "</div>";
   }
   function detailHtml(m) {
     var h = headInfo(m), p = parts(m);
-    return '<div class="dhead">' + titleHtml(m, "h2") + '<div class="meta">' + h.when + "</div>" + (h.chips ? '<div class="chips">' + h.chips + "</div>" : "") + "</div>" +
+    return '<div class="dhead"><h2>' + esc(titleOf(m)) + '</h2><div class="meta">' + h.when + "</div>" + (h.chips ? '<div class="chips">' + h.chips + "</div>" : "") + "</div>" +
       '<div class="dgrid"><div class="col">' + (p.summary ? '<div class="dc">' + p.summary + "</div>" : "") + (p.decisions ? '<div class="dc">' + p.decisions + "</div>" : "") + "</div>" +
       '<div class="col">' + (p.todos ? '<div class="dc">' + p.todos + "</div>" : "") + (p.waits ? '<div class="dc">' + p.waits + "</div>" : "") + "</div>" +
       (p.deliv ? '<div class="dc full">' + p.deliv + "</div>" : "") +
@@ -461,6 +468,7 @@ a { color: var(--ctl); text-underline-offset: 2px; }
   }
 
   document.addEventListener("click", function (ev) {
+    if (ev.target.closest("[data-rename]")) return;
     var pen = ev.target.closest("[data-pen]"); if (pen) { startRename(pen.dataset.pen); return; }
     var el = ev.target.closest("[data-tab],[data-select],[data-toggle],[data-tr],[data-dl],[data-goto]"); if (!el) return;
     if (el.dataset.tab) { tab = el.dataset.tab; render(); }
@@ -482,6 +490,8 @@ a { color: var(--ctl); text-underline-offset: 2px; }
   $("search").addEventListener("input", function (e) { query = e.target.value.trim(); render(); });
   document.addEventListener("input", function (ev) { if (ev.target.dataset && ev.target.dataset.rename) editDraft = ev.target.value; });
   document.addEventListener("keydown", function (ev) {
+    var r = ev.target.classList && ev.target.classList.contains("row") && ev.target.dataset.select;
+    if (r && (ev.key === "Enter" || ev.key === " ")) { ev.preventDefault(); selected = r; render(); return; }
     if (!ev.target.dataset || !ev.target.dataset.rename) return;
     if (ev.key === "Enter") { ev.preventDefault(); finishRename(true); }
     else if (ev.key === "Escape") { ev.preventDefault(); finishRename(false); }
