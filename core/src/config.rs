@@ -137,6 +137,7 @@ pub fn default_capture_them(sink: &str) -> Vec<String> {
 }
 
 /// Always pass the device explicitly with `-d`, so the mic and the sink monitor stay separate tracks.
+/// Without `--latency-msec` parec delivers audio in 2 s blocks, so every other second looks silent.
 fn parec_argv(device: &str) -> Vec<String> {
     [
         "parec",
@@ -146,6 +147,7 @@ fn parec_argv(device: &str) -> Vec<String> {
         "--rate=16000",
         "--channels=1",
         "--raw",
+        "--latency-msec=100",
     ]
     .map(String::from)
     .to_vec()

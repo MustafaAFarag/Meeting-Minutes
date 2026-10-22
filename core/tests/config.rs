@@ -26,7 +26,8 @@ fn default_capture_commands_use_parec_with_an_explicit_device() {
             "--format=s16le",
             "--rate=16000",
             "--channels=1",
-            "--raw"
+            "--raw",
+            "--latency-msec=100"
         ]
     );
     assert_eq!(
@@ -38,7 +39,8 @@ fn default_capture_commands_use_parec_with_an_explicit_device() {
             "--format=s16le",
             "--rate=16000",
             "--channels=1",
-            "--raw"
+            "--raw",
+            "--latency-msec=100"
         ]
     );
 }
