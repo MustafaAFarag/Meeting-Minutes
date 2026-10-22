@@ -6,3 +6,4 @@ node_modules/
 .local-samples/
 artifact/ARTIFACT_URL.txt
 .claude/
+docs/*.pdf
