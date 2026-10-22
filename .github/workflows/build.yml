@@ -33,7 +33,7 @@ jobs:
         shell: bash
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -62,7 +62,7 @@ jobs:
       # Bump the "v1" in the key to pick up a newer tauri-cli 2.x.
       - name: Cache Tauri CLI
         id: tauri-cli-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cargo/bin/cargo-tauri*
           key: tauri-cli-2-v1-${{ runner.os }}-${{ runner.arch }}
@@ -96,7 +96,7 @@ jobs:
       - name: Cache whisper-cli (macOS)
         id: whisper-cli-cache
         if: runner.os == 'macOS'
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: whisper-cli-cache/whisper-cli
           key: whisper-b5130-${{ runner.arch }}
@@ -158,22 +158,29 @@ jobs:
       - name: Collect files with fixed names
         run: |
           # Without globstar, `**` matches exactly one folder, so target/release/... never matched.
-          shopt -s globstar
+          # nullglob + the check below turn "no file" into a clear error instead of a literal path.
+          shopt -s globstar nullglob
+          bundles=( ${{ matrix.bundle_glob }} )
+          if [ "${#bundles[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly 1 file for ${{ matrix.bundle_glob }}, found ${#bundles[@]}: ${bundles[*]}"
+            find app/src-tauri/target -maxdepth 6 -path '*/release/bundle/*' -type f | head -n 20
+            exit 1
+          fi
           mkdir -p out
           case "${{ matrix.name }}" in
             macos)
-              cp ${{ matrix.bundle_glob }} out/MeetingNotes-macos.dmg
+              cp "${bundles[0]}" out/MeetingNotes-macos.dmg
               (cd core && cargo build --release --target aarch64-apple-darwin && cargo build --release --target x86_64-apple-darwin)
               lipo -create -output out/mn-macos core/target/aarch64-apple-darwin/release/mn core/target/x86_64-apple-darwin/release/mn
               cp whisper-cli-cache/whisper-cli out/whisper-cli-macos
               ;;
             windows)
-              cp ${{ matrix.bundle_glob }} out/MeetingNotes-windows-setup.exe
+              cp "${bundles[0]}" out/MeetingNotes-windows-setup.exe
               (cd core && cargo build --release)
               cp core/target/release/mn.exe out/mn-windows.exe
               ;;
             linux)
-              cp ${{ matrix.bundle_glob }} out/MeetingNotes-linux.AppImage
+              cp "${bundles[0]}" out/MeetingNotes-linux.AppImage
               (cd core && cargo build --release)
               cp core/target/release/mn out/mn-linux
               ;;

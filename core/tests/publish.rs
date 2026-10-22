@@ -160,8 +160,16 @@ fn staging_dir_has_the_page_the_index_and_only_the_pending_meetings() {
     }
     assert!(!stage.join("data/transcripts/2026-03-02_0900.md").exists());
 
-    // the real run happened in a staging dir under notes_dir/.staging, now gone
-    assert!(call.cwd.starts_with(fx.notes().join(".staging")));
+    // the real run happened in a staging dir under notes_dir/.staging, now gone. The fake's
+    // cwd may be the resolved path (macOS temp dirs: /var -> /private/var), so accept either.
+    let staging = fx.notes().join(".staging");
+    let staging_real = fs::canonicalize(fx.notes()).unwrap().join(".staging");
+    assert!(
+        call.cwd.starts_with(&staging) || call.cwd.starts_with(&staging_real),
+        "{} is not under {}",
+        call.cwd.display(),
+        staging_real.display()
+    );
     assert!(!call.cwd.exists());
 
     assert_eq!(call.artifact_env.as_deref(), Some("1"));
