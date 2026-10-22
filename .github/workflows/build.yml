@@ -41,22 +41,24 @@ jobs:
         with:
           targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
-      # v0.1.1 hung here for 4 h. Normally under 2 min.
+      # azure.archive.ubuntu.com can be very slow (v0.1.1 ran 4 h here; v0.1.2 got 130 packages
+      # in 10 min). The packages are cached, so only a cache miss downloads them.
+      # Bump `version` to force a fresh download.
+      - name: Configure apt retries (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          printf 'Acquire::Retries "3";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\n' |
+            sudo tee /etc/apt/apt.conf.d/80-retries
+
       - name: Install Linux system packages
         if: runner.os == 'Linux'
-        timeout-minutes: 10
+        timeout-minutes: 20
+        uses: awalsh128/cache-apt-pkgs-action@v1.6.3
         env:
           DEBIAN_FRONTEND: noninteractive
-        run: |
-          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
-          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y \
-            libwebkit2gtk-4.1-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libgtk-3-dev \
-            libssl-dev \
-            libxdo-dev \
-            patchelf
+        with:
+          packages: libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libgtk-3-dev libssl-dev libxdo-dev patchelf
+          version: tauri-deps-1
 
       - uses: Swatinem/rust-cache@v2
         with:
