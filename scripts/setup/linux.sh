@@ -5,11 +5,14 @@
 #   bash scripts/setup/linux.sh --detect-name
 #   bash scripts/setup/linux.sh --name "Full Name" [--model small|turbo] [--skip-page] [--skip-launch]
 #                               [--release-base <url-or-dir>]
+#   bash scripts/setup/linux.sh --update     (an update: the name comes from the existing config)
 #
 # Last line of output: SETUP_RESULT {json}
 set -euo pipefail
 
 DEFAULT_BASE="https://github.com/MustafaAFarag/Meeting-Minutes/releases/latest/download"
+TAG_BASE="https://github.com/MustafaAFarag/Meeting-Minutes/releases/download"
+CLAUDE_INSTALL_URL="https://claude.ai/install.sh"
 WHISPER_URL="https://github.com/ggml-org/whisper.cpp/releases/download/b5130/whisper-bin-ubuntu-x64.tar.gz"
 MODEL_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
 VAD_URL="https://huggingface.co/ggml-org/whisper-vad/resolve/main"
@@ -19,7 +22,10 @@ NAME=""
 MODEL=""
 SKIP_PAGE=0
 SKIP_LAUNCH=0
-RELEASE_BASE="$DEFAULT_BASE"
+UPDATE=0
+RELEASE_BASE=""
+RELEASE_TAG=""
+RELEASE_LABEL=""
 WHISPER_CLI_OVERRIDE=""   # hidden, for tests
 WHISPER_MODEL_OVERRIDE="" # hidden, for tests
 
@@ -155,9 +161,13 @@ warn() {
   WARN_JSON="$WARN_JSON\"$(json_str "$1")\""
 }
 
+bool_json() {
+  if [ "$1" -eq 1 ]; then printf 'true'; else printf 'false'; fi
+}
+
 die() {
   printf 'ERROR: %s\n' "$1" >&2
-  printf 'SETUP_RESULT {"ok":false,"error":"%s"}\n' "$(json_str "$1")"
+  printf 'SETUP_RESULT {"ok":false,"update":%s,"error":"%s"}\n' "$(bool_json "$UPDATE")" "$(json_str "$1")"
   exit 1
 }
 
@@ -169,7 +179,9 @@ Usage: bash scripts/setup/linux.sh --name "Full Name" [options]
   --model small|turbo       speech model (default: small)
   --skip-page               do not create the My Meetings page
   --skip-launch             do not start the widget
-  --release-base <url|dir>  where the release files are (default: GitHub releases/latest/download)
+  --update                  update an existing install (the name is taken from the old config)
+  --release-base <url|dir>  where the release files are (default: the GitHub release of the tag this folder is
+                            checked out at, or releases/latest/download if it is not at a tag)
 USAGE
 }
 
@@ -181,6 +193,7 @@ while [ "$#" -gt 0 ]; do
     --model=*) MODEL="${1#--model=}"; shift ;;
     --skip-page) SKIP_PAGE=1; shift ;;
     --skip-launch) SKIP_LAUNCH=1; shift ;;
+    --update) UPDATE=1; shift ;;
     --release-base) [ "$#" -ge 2 ] || die "--release-base needs a value."; RELEASE_BASE="$2"; shift 2 ;;
     --release-base=*) RELEASE_BASE="${1#--release-base=}"; shift ;;
     --whisper-cli) [ "$#" -ge 2 ] || die "--whisper-cli needs a value."; WHISPER_CLI_OVERRIDE="$2"; shift 2 ;;
@@ -189,7 +202,24 @@ while [ "$#" -gt 0 ]; do
     *) die "Unknown option $1. Run with --help to see the options." ;;
   esac
 done
-RELEASE_BASE="${RELEASE_BASE%/}"
+
+# Where the binaries come from. An explicit --release-base always wins. Otherwise: the release of the
+# tag this repo folder is checked out at (so going back to an old tag installs the old binaries), or
+# the latest release (a dev checkout of main, or no git).
+if [ -n "$RELEASE_BASE" ]; then
+  RELEASE_BASE="${RELEASE_BASE%/}"
+  RELEASE_LABEL="custom"
+else
+  RELEASE_BASE="$DEFAULT_BASE"
+  RELEASE_LABEL="latest"
+  REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)" || REPO_DIR=""
+  if [ -n "$REPO_DIR" ] && command -v git >/dev/null 2>&1; then
+    TAG="$(git -C "$REPO_DIR" describe --tags --exact-match --match 'v[0-9]*' 2>/dev/null | head -n 1)" || TAG=""
+    case "$TAG" in
+      v[0-9]*) RELEASE_TAG="$TAG"; RELEASE_LABEL="$TAG"; RELEASE_BASE="$TAG_BASE/$TAG" ;;
+    esac
+  fi
+fi
 
 case "$MODEL" in
   ""|small|turbo) ;;
@@ -199,9 +229,24 @@ esac
 
 # download <url> <dest>: writes to <dest>.part first, so a broken download never looks finished.
 download() {
+  local code
   rm -f "$2.part"
-  curl -fsSL --retry 3 --retry-delay 3 -o "$2.part" "$1" ||
-    die "Could not download $1. Check the internet connection, then run this script again."
+  code="$(curl -sSL --retry 3 --retry-delay 3 -o "$2.part" -w '%{http_code}' "$1")" || code="000"
+  case "$code" in
+    2??) ;;
+    404)
+      rm -f "$2.part"
+      # A tag whose release CI is still building has no files yet.
+      if [ -n "$RELEASE_TAG" ] && [ "${1#"$RELEASE_BASE"/}" != "$1" ]; then
+        die "This version is still being prepared. Wait 30 minutes, then run this script again."
+      fi
+      die "Could not download $1. Check the internet connection, then run this script again."
+      ;;
+    *)
+      rm -f "$2.part"
+      die "Could not download $1. Check the internet connection, then run this script again."
+      ;;
+  esac
   mv -f "$2.part" "$2"
 }
 
@@ -222,33 +267,11 @@ file_size() {
 
 # ---------------------------------------------------------------- 1. checks
 step "Checking this computer"
+if [ "$RELEASE_LABEL" = "custom" ]; then echo "Using release files from $RELEASE_BASE"; else echo "Using release $RELEASE_LABEL"; fi
 [ "$(uname -s)" = "Linux" ] || die "This script is for Linux. Use mac.sh on a Mac or windows.ps1 on Windows."
 [ "$(uname -m)" = "x86_64" ] || die "Only 64-bit Intel/AMD Linux (x86_64) is supported."
 command -v curl >/dev/null 2>&1 || die "curl is missing. Install curl with the system package manager, then run this script again."
 command -v tar >/dev/null 2>&1 || die "tar is missing. Install tar with the system package manager, then run this script again."
-
-CLAUDE=""
-if command -v claude >/dev/null 2>&1; then
-  CLAUDE="$(command -v claude)"
-else
-  for c in "$HOME/.local/bin/claude" "$HOME/.claude/local/claude" "$HOME/.npm-global/bin/claude" /usr/local/bin/claude; do
-    if [ -x "$c" ]; then CLAUDE="$c"; break; fi
-  done
-fi
-[ -n "$CLAUDE" ] || die "Claude Code is not installed. Install it from https://claude.com/claude-code, log in, then run this script again."
-
-AUTH_OUT=""
-AUTH_OK=1
-AUTH_OUT="$("$CLAUDE" auth status 2>&1)" || AUTH_OK=0
-if printf '%s' "$AUTH_OUT" | grep -Eq '"loggedIn"[[:space:]]*:[[:space:]]*false'; then AUTH_OK=0; fi
-if [ "$AUTH_OK" -eq 0 ]; then
-  if [ "$SKIP_PAGE" -eq 1 ]; then
-    warn "Claude Code is not logged in. Run 'claude' once and sign in before the first recording."
-  else
-    die "Claude Code is not logged in. Ask the user to run 'claude' in a terminal and sign in, then run this script again."
-  fi
-fi
-CODEX="$(command -v codex 2>/dev/null || true)"
 
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/meeting-notes"
 CONFIG="$CONFIG_DIR/config.toml"
@@ -256,7 +279,37 @@ DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/meeting-notes"
 BIN_DIR="$HOME/.local/bin"
 MN="$BIN_DIR/mn"
 APP="$BIN_DIR/MeetingNotes.AppImage"
+
+if [ "$UPDATE" -eq 1 ] && [ ! -f "$CONFIG" ]; then
+  die "There is no earlier install to update (no config file at $CONFIG). Do a normal install instead: follow SETUP.md from step 0 and run this script with --name \"Full Name\"."
+fi
 mkdir -p "$CONFIG_DIR" "$DATA_DIR" "$BIN_DIR"
+
+# The standalone Claude Code that 'mn' calls in the background. It is installed here with the
+# official installer when missing (a file, never piped into a shell).
+CLAUDE="$(find_claude_for_detection 2>/dev/null || true)"
+if [ -z "$CLAUDE" ]; then
+  echo "Installing Claude Code (about 1 minute)..."
+  download "$CLAUDE_INSTALL_URL" "$DATA_DIR/claude-install.sh"
+  bash "$DATA_DIR/claude-install.sh" >"$DATA_DIR/claude-install.log" 2>&1 ||
+    die "Could not install Claude Code ($(tail -n 1 "$DATA_DIR/claude-install.log" | tr -d '\r')). Check the internet connection, then run this script again."
+  rm -f "$DATA_DIR/claude-install.sh" "$DATA_DIR/claude-install.log"
+  CLAUDE="$(find_claude_for_detection 2>/dev/null || true)"
+  [ -n "$CLAUDE" ] || die "Claude Code was installed but was not found at $HOME/.local/bin/claude. Run this script again."
+fi
+
+AUTH_OUT=""
+AUTH_OK=1
+AUTH_OUT="$("$CLAUDE" auth status 2>&1)" || AUTH_OK=0
+if printf '%s' "$AUTH_OUT" | grep -Eq '"loggedIn"[[:space:]]*:[[:space:]]*false'; then AUTH_OK=0; fi
+if [ "$AUTH_OK" -eq 0 ]; then
+  if [ "$SKIP_PAGE" -eq 1 ]; then
+    warn "Claude Code is not signed in. Do the sign-in step of SETUP.md (step 2) before the first recording."
+  else
+    die "Claude Code is not signed in. Do the sign-in step of SETUP.md (step 2): run '$CLAUDE auth login' (the user clicks Authorize in the browser), or have the user type 'claude' in a terminal and sign in. Then run this script again."
+  fi
+fi
+CODEX="$(command -v codex 2>/dev/null || true)"
 
 # Keep the name and the notes folder of an earlier install when they are not given again.
 OLD_NOTES_LINE=""
@@ -266,6 +319,9 @@ if [ -f "$CONFIG" ]; then
   OLD_NAME_LINE="$(grep -m1 -E '^my_name[[:space:]]*=' "$CONFIG" || true)"
 fi
 if [ -z "$NAME" ] && [ -z "$OLD_NAME_LINE" ]; then
+  if [ "$UPDATE" -eq 1 ]; then
+    die "The existing config at $CONFIG has no name, so this cannot be an update. Do a normal install instead: follow SETUP.md from step 0 and run this script with --name \"Full Name\"."
+  fi
   die "The person's full name is missing. Ask the user for their full name and run this script again with --name \"Full Name\"."
 fi
 
@@ -286,6 +342,21 @@ fi
 step "Installing the Meeting Notes app (about 1 minute)"
 fetch_release "MeetingNotes-linux.AppImage" "$APP"
 chmod +x "$APP"
+
+# An application-menu entry, so the widget can be opened again. No Icon line: the AppImage is not unpacked here.
+DESKTOP_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+case "$APP" in
+  *[\\\"\$\`]*)
+    warn "The app path has special characters, so the application-menu entry was not written. Start $APP from a terminal."
+    ;;
+  *)
+    if mkdir -p "$DESKTOP_DIR" && printf '[Desktop Entry]\nType=Application\nName=Meeting Notes\nComment=Record calls and get meeting notes\nExec="%s"\nTerminal=false\nCategories=Office;AudioVideo;\n' "$APP" >"$DESKTOP_DIR/meeting-notes.desktop"; then
+      chmod +x "$DESKTOP_DIR/meeting-notes.desktop" 2>/dev/null || true
+    else
+      warn "Could not write the application-menu entry in $DESKTOP_DIR."
+    fi
+    ;;
+esac
 
 # ---------------------------------------------------------------- 3. mn
 step "Installing the command-line tool (mn)"
@@ -427,7 +498,7 @@ else
 fi
 
 if [ -n "$PAGE_URL" ]; then PAGE_JSON="\"$(json_str "$PAGE_URL")\""; else PAGE_JSON="null"; fi
-printf 'SETUP_RESULT {"ok":true,"os":"linux","config":"%s","artifact_url_file":"%s","mn":"%s","app":"%s","whisper_cli":"%s","whisper_model":"%s","notes_dir":"%s","claude_cli":"%s","page_url":%s,"launched":%s,"warnings":[%s]}\n' \
+printf 'SETUP_RESULT {"ok":true,"os":"linux","config":"%s","artifact_url_file":"%s","mn":"%s","app":"%s","whisper_cli":"%s","whisper_model":"%s","notes_dir":"%s","claude_cli":"%s","page_url":%s,"launched":%s,"update":%s,"release":"%s","warnings":[%s]}\n' \
   "$(json_str "$CONFIG")" "$(json_str "$URL_FILE")" "$(json_str "$MN")" "$(json_str "$APP")" \
   "$(json_str "$WHISPER")" "$(json_str "$WMODEL")" "$(json_str "$NOTES_DIR")" "$(json_str "$CLAUDE")" \
-  "$PAGE_JSON" "$LAUNCHED" "$WARN_JSON"
+  "$PAGE_JSON" "$LAUNCHED" "$(bool_json "$UPDATE")" "$(json_str "$RELEASE_LABEL")" "$WARN_JSON"
