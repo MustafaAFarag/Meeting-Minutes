@@ -337,15 +337,27 @@ fn ensure_placed(window: &Window) {
     report(window, "settled ");
 }
 
-/// Sets the size and pins it (minimum = maximum), so the user cannot resize the widget by its
-/// edges. `resizable: false` cannot be used instead: GTK then ignores `set_size` and keeps the
-/// window at its default 200x200.
+/// Sets the size and turns resizing off, so the edges neither resize nor show resize cursors.
+/// Linux: a non-resizable GTK window takes its size request and ignores `set_size` (it stays at
+/// 200x200), so the request is set to the size itself.
+#[cfg(target_os = "linux")]
 fn lock_size(window: &Window, size: LogicalSize<f64>) -> tauri::Result<()> {
-    window.set_min_size(None::<LogicalSize<f64>>)?;
-    window.set_max_size(None::<LogicalSize<f64>>)?;
+    let w = window.clone();
+    window.run_on_main_thread(move || {
+        use gtk::prelude::{GtkWindowExt, WidgetExt};
+        if let Ok(gtk_window) = w.gtk_window() {
+            let (width, height) = (size.width.round() as i32, size.height.round() as i32);
+            gtk_window.set_size_request(width, height);
+            gtk_window.set_resizable(false);
+            gtk_window.resize(width, height);
+        }
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn lock_size(window: &Window, size: LogicalSize<f64>) -> tauri::Result<()> {
     window.set_size(size)?;
-    window.set_min_size(Some(size))?;
-    window.set_max_size(Some(size))
+    window.set_resizable(false)
 }
 
 /// Resizes between the folded tab and the unfolded column, keeping the same edge and the same
