@@ -1,5 +1,6 @@
 pub mod capture;
 pub mod config;
+pub mod doctor;
 mod exec;
 pub mod levels;
 mod native_capture;

@@ -137,7 +137,7 @@ fn create_prompt(files_json: &str) -> String {
 }
 
 /// `artifact_url` from the config, else the first line of the saved URL file.
-fn known_url(cfg: &Config, url_file: &Path) -> Option<String> {
+pub(crate) fn known_url(cfg: &Config, url_file: &Path) -> Option<String> {
     let from_config = cfg.artifact_url.as_deref().map(str::trim);
     if let Some(url) = from_config.filter(|u| !u.is_empty()) {
         return Some(url.to_string());

@@ -1,7 +1,8 @@
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use crate::config::Config;
 
@@ -68,11 +69,39 @@ fn find_on_path(name: &Path) -> Option<PathBuf> {
 
 /// A `claude` command with CLAUDE_CONFIG_DIR exported only when the config sets it.
 pub(crate) fn claude_command(cfg: &Config) -> Command {
-    let mut cmd = command(&cfg.claude_cli);
+    let mut cmd = command(resolve_claude_cli(&cfg.claude_cli));
     if let Some(dir) = &cfg.claude_config_dir {
         cmd.env("CLAUDE_CONFIG_DIR", dir);
     }
     cmd
+}
+
+/// Resolves the usual Claude install made by the setup scripts when it is missing from PATH.
+pub(crate) fn resolve_claude_cli(cli: &Path) -> PathBuf {
+    let home = dirs::home_dir();
+    resolve_claude_cli_with(cli, home.as_deref(), resolves)
+}
+
+fn resolve_claude_cli_with(
+    cli: &Path,
+    home: Option<&Path>,
+    is_on_path: impl Fn(&Path) -> bool,
+) -> PathBuf {
+    if cli != Path::new("claude") || is_on_path(cli) {
+        return cli.to_path_buf();
+    }
+    let Some(home) = home else {
+        return cli.to_path_buf();
+    };
+    #[cfg(windows)]
+    let local_cli = home.join(".local").join("bin").join("claude.exe");
+    #[cfg(not(windows))]
+    let local_cli = home.join(".local").join("bin").join("claude");
+    if local_cli.is_file() {
+        local_cli
+    } else {
+        cli.to_path_buf()
+    }
 }
 
 /// Runs the command to the end with stdout and stderr captured.
@@ -92,6 +121,69 @@ pub(crate) fn run(cmd: &mut Command, stdin: Option<&str>) -> io::Result<Output> 
     let out = child.wait_with_output();
     let _ = writer.join();
     out
+}
+
+/// Captures a command's output and kills it when it runs longer than `timeout`.
+/// `Ok(None)` means the time limit was reached.
+pub(crate) fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> io::Result<Option<Output>> {
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn()?;
+    let Some(stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(io::Error::other("command stdout was not captured"));
+    };
+    let Some(stderr) = child.stderr.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(io::Error::other("command stderr was not captured"));
+    };
+    let stdout_reader = thread::spawn(move || read_pipe(stdout));
+    let stderr_reader = thread::spawn(move || read_pipe(stderr));
+    let deadline = Instant::now() + timeout;
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return Ok(Some(Output {
+                    status,
+                    stdout: join_pipe(stdout_reader)?,
+                    stderr: join_pipe(stderr_reader)?,
+                }));
+            }
+            Ok(None) if Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(50));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait()?;
+                let _ = join_pipe(stdout_reader)?;
+                let _ = join_pipe(stderr_reader)?;
+                return Ok(None);
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = join_pipe(stdout_reader);
+                let _ = join_pipe(stderr_reader);
+                return Err(error);
+            }
+        }
+    }
+}
+
+fn read_pipe(mut pipe: impl Read) -> io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    pipe.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+fn join_pipe(reader: thread::JoinHandle<io::Result<Vec<u8>>>) -> io::Result<Vec<u8>> {
+    reader
+        .join()
+        .map_err(|_| io::Error::other("command output reader stopped"))?
 }
 
 /// The first 300 characters of stdout, or of stderr when stdout is empty.
@@ -121,6 +213,33 @@ pub(crate) fn resolves(cli: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_default_claude_uses_the_local_bin_copy() {
+        let home = tempfile::tempdir().unwrap();
+        let bin = home.path().join(".local").join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let name = if cfg!(windows) {
+            "claude.exe"
+        } else {
+            "claude"
+        };
+        let expected = bin.join(name);
+        std::fs::write(&expected, "fake cli").unwrap();
+
+        let resolved = resolve_claude_cli_with(Path::new("claude"), Some(home.path()), |_| false);
+
+        assert_eq!(resolved, expected);
+    }
+
+    #[test]
+    fn does_not_use_local_claude_when_command_is_on_path() {
+        let home = tempfile::tempdir().unwrap();
+
+        let resolved = resolve_claude_cli_with(Path::new("claude"), Some(home.path()), |_| true);
+
+        assert_eq!(resolved, PathBuf::from("claude"));
+    }
 
     #[test]
     fn bare_names_try_exe_then_cmd() {
