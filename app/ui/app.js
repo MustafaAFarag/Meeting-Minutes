@@ -8,6 +8,8 @@ const DRAG_PX = 4;
 const NOTICE_MS = 6000;
 const DETAIL_CHARS = 120;
 const MIN_DB = -60;
+const COPIED_MS = 2500;
+const COPIED_TEXT = "Copied - paste it into Claude";
 
 const $ = (id) => document.getElementById(id);
 const app = $("app");
@@ -17,6 +19,8 @@ const TITLE_OPEN_MEETINGS = "Open My Meetings";
 
 let doneTimer = null;
 let noticeTimer = null;
+let copiedTimer = null;
+let updatePrompt = "";
 // After Stop is clicked, late "recording" events must not flip the view back.
 let stopping = false;
 let statusDetail = "";
@@ -170,6 +174,50 @@ $("retry").addEventListener("click", () => {
 
 $("open-meetings").addEventListener("click", () => run("open_meetings", showNotice));
 
+// The open column is 44px wide, so the button shows "Update" and, after a copy, as much of
+// "Copied - paste it into Claude" as fits. The tooltip is the full sentence. The tray item
+// is the path that shows the sentence in a notification. Folded (12px) hides this button.
+function showUpdate(payload) {
+  const prompt = payload && payload.prompt ? String(payload.prompt) : "";
+  if (!prompt) return;
+  updatePrompt = prompt;
+  const btn = $("update");
+  btn.hidden = false;
+  btn.textContent = "Update";
+  const version = payload.version ? " (" + payload.version + ")" : "";
+  btn.title = "Update available" + version;
+  btn.setAttribute("aria-label", "Update");
+}
+
+async function copyUpdate() {
+  if (!updatePrompt) return;
+  const btn = $("update");
+  try {
+    await navigator.clipboard.writeText(updatePrompt);
+  } catch (err) {
+    console.error(err);
+    try {
+      await invoke("copy_update_prompt", { text: updatePrompt });
+    } catch (err2) {
+      console.error(err2);
+      return;
+    }
+  }
+  btn.textContent = COPIED_TEXT;
+  btn.title = COPIED_TEXT;
+  btn.setAttribute("aria-label", COPIED_TEXT);
+  clearTimeout(copiedTimer);
+  copiedTimer = setTimeout(() => {
+    btn.textContent = "Update";
+    btn.title = "Update available";
+    btn.setAttribute("aria-label", "Update");
+  }, COPIED_MS);
+}
+
+$("update").addEventListener("click", () => {
+  copyUpdate();
+});
+
 // A press-and-move on the empty area drags the column along the edge (and drops it on the
 // nearest side edge).
 app.addEventListener("mousedown", (event) => {
@@ -200,6 +248,7 @@ function setEdge(edge) {
 
 listen("mn-status", (event) => onStatus(event.payload));
 listen("mn-edge", (event) => setEdge(event.payload));
+listen("mn-update", (event) => showUpdate(event.payload));
 invoke("current_edge").then(setEdge).catch(console.error);
 setView("idle");
 openColumn();

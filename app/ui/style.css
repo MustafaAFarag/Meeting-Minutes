@@ -126,6 +126,33 @@ html, body {
 #app[data-view="recording"] #stop { background: var(--red); }
 .icon-btn.alert { box-shadow: 0 0 0 1.5px var(--red); }
 
+/* Newer release. Hidden until the app emits mn-update. The column is 44px wide, so a long
+   confirmation ellipsizes; the full sentence is the tooltip. */
+.update {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 36px;
+  height: 18px;
+  padding: 0 2px;
+  border: 1px solid rgba(217, 119, 87, 0.75);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--orange);
+  font: inherit;
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.update[hidden] { display: none; }
+.update:hover { background: rgba(217, 119, 87, 0.16); }
+.update:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
+
 @keyframes fade { from { opacity: 0; } }
 @keyframes pulse { 50% { opacity: 0.25; transform: scale(0.8); } }
 @keyframes spin { to { transform: rotate(360deg); } }
