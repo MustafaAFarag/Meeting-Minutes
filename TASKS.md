@@ -35,6 +35,8 @@ The pilot PM (Mac) uses it on 5 real meetings in 1 week. Each card is correct (r
   - [x] real Linux install from the v0.1.3 release in a sandboxed HOME: ok in 3 min, downloaded whisper transcribes jfk.wav, re-run idempotent. Fixed a false "libfuse2 not found" (grep -q + pipefail SIGPIPE)
   - [ ] mac.sh on the brother's MacBook (first real run), windows.ps1 on Mustafa's PC (first real run; also check start-at-login after a restart, the Run key path has a space)
   - [x] Mustafa's Arch autostart: tauri-plugin-autostart writes Exec= unquoted, and the dev path has spaces, so KDE skipped it. Exec now points at ~/.local/bin/meeting-notes. Toggling Start at login in the tray rewrites the broken path. AppImage installs are not affected (no spaces)
+  - [x] KDE: the widget stayed on one virtual desktop. KWin ignores the sticky hint and _NET_WM_DESKTOP requests for it; a KWin window rule (class contains "eeting-notes", desktops = all, force) in ~/.config/kwinrulesrc fixes it. Set on Mustafa's Arch 2026-10-23
+  - [ ] later: linux.sh adds that KWin rule when the desktop is KDE; check virtual desktops on Windows and Mac (Spaces) in the tests
   - [ ] later: quote the Linux Exec= path after enable() so dev paths with spaces work
 - [ ] 7. Install on pilot Mac, run the pilot week
 - [ ] 8. Branding by account (after the Windows + Mac tests pass)
