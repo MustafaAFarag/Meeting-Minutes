@@ -17,6 +17,10 @@ Newest first. "What's new for you" is read by Claude to tell project managers wh
 - `mn doctor`: health check, one line per check and a final `DOCTOR_RESULT {json}` line.
 - Setup scripts: `--update` / `-Update`, install the standalone Claude CLI with the official installer when missing, add a Dock tile (macOS), Desktop and Start-menu shortcuts (Windows) or an application-menu entry (Linux). `SETUP_RESULT` has `"update"`.
 - Install location is fixed at `~/Meeting-Minutes` and PMs run tagged releases only (`UPDATE.md`, `scripts/release.sh`).
+- Setup downloads the binaries of the release of the checked-out tag (rollback installs the old binaries); `SETUP_RESULT` has `"release"`.
+- App: `tauri-plugin-single-instance`; daily GitHub latest-release check with a tray item and widget button that copy the update prompt (`MN_FAKE_LATEST` fakes it); Linux autostart `Exec=` is quoted and uses `$APPIMAGE`.
+- `claude` falls back to `~/.local/bin/claude` when the bare `claude` is not on PATH.
+- My Meetings page: Ask MM popup outside the re-rendered views, Storbi avatar runtime inlined (+65 KB).
 
 ## v0.1.5 - 2026-10-23
 
