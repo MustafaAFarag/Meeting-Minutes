@@ -277,30 +277,7 @@ fn run_whisper(
     track: Track,
     wav: &Path,
 ) -> Result<Vec<Segment>> {
-    let mut cmd = command(&cfg.whisper_cli);
-    cmd.arg("-m")
-        .arg(model)
-        .arg("-f")
-        .arg(wav)
-        .args(["-l", &cfg.language, "-oj", "-of"])
-        .arg(session_dir.join(track.name()))
-        .arg("-np")
-        .arg("-t")
-        .arg(cfg.threads.max(1).to_string())
-        // No non-speech tokens: one of the ways whisper invents lines on silence.
-        .arg("-sns");
-    // With VAD whisper only hears speech: silence cannot invent lines, and "auto" picks the
-    // language from the first speech instead of from a silent start.
-    if let Some(vad_model) = &cfg.vad_model {
-        cmd.args(["--vad", "-vm"]).arg(vad_model).args(VAD_ARGS);
-    }
-    // No text carried from one 30 s window to the next stops the loops where whisper repeats one
-    // invented line for minutes. whisper then drops --prompt as well, so a vocab prompt keeps
-    // the context and relies on VAD to keep the silences out.
-    match &cfg.vocab_prompt {
-        Some(prompt) => cmd.arg("--prompt").arg(prompt),
-        None => cmd.args(["-mc", "0"]),
-    };
+    let mut cmd = whisper_command(cfg, model, wav, &session_dir.join(track.name()));
     // output() captures stdout too, so whisper cannot mix into our JSON status lines
     let out = cmd
         .output()
@@ -325,6 +302,40 @@ fn run_whisper(
     Ok(drop_repeats(
         segments.into_iter().map(fix_long_span).collect(),
     ))
+}
+
+/// Builds the shared whisper.cpp command used by normal transcribing and `mn doctor`.
+pub(crate) fn whisper_command(
+    cfg: &Config,
+    model: &Path,
+    wav: &Path,
+    output_prefix: &Path,
+) -> std::process::Command {
+    let mut cmd = command(&cfg.whisper_cli);
+    cmd.arg("-m")
+        .arg(model)
+        .arg("-f")
+        .arg(wav)
+        .args(["-l", &cfg.language, "-oj", "-of"])
+        .arg(output_prefix)
+        .arg("-np")
+        .arg("-t")
+        .arg(cfg.threads.max(1).to_string())
+        // No non-speech tokens: one of the ways whisper invents lines on silence.
+        .arg("-sns");
+    // With VAD whisper only hears speech: silence cannot invent lines, and "auto" picks the
+    // language from the first speech instead of from a silent start.
+    if let Some(vad_model) = &cfg.vad_model {
+        cmd.args(["--vad", "-vm"]).arg(vad_model).args(VAD_ARGS);
+    }
+    // No text carried from one 30 s window to the next stops the loops where whisper repeats one
+    // invented line for minutes. whisper then drops --prompt as well, so a vocab prompt keeps
+    // the context and relies on VAD to keep the silences out.
+    match &cfg.vocab_prompt {
+        Some(prompt) => cmd.arg("--prompt").arg(prompt),
+        None => cmd.args(["-mc", "0"]),
+    };
+    cmd
 }
 
 fn remove(path: &Path) -> Result<()> {

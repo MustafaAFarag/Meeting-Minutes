@@ -23,6 +23,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Check that everything is installed and signed in (run after install or update)
+    Doctor,
     /// Record until you press Ctrl+C, STOP appears in the session dir, or --max-seconds
     Record {
         /// Stop after this many seconds
@@ -72,6 +74,7 @@ fn record_options(max_seconds: Option<u64>) -> Result<RecordOptions> {
 fn run(cli: Cli) -> Result<()> {
     let cfg = Config::load(cli.config.as_deref())?;
     match cli.command {
+        Command::Doctor => {}
         Command::Record { max_seconds } => {
             mn_core::record(&cfg, &record_options(max_seconds)?, emit)?;
         }
@@ -115,6 +118,16 @@ fn run(cli: Cli) -> Result<()> {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    if matches!(&cli.command, Command::Doctor) {
+        let expected = std::env::var("MN_EXPECTED_VERSION").ok();
+        let report = mn_core::doctor::diagnose(cli.config.as_deref(), expected.as_deref());
+        print!("{}", report.render());
+        return if report.ok {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        };
+    }
     // `capture` owns stdout: it is the PCM stream, so an error goes to stderr only.
     let machine_readable = !matches!(cli.command, Command::Config | Command::Capture { .. });
     match run(cli) {
