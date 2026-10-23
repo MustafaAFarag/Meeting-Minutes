@@ -63,7 +63,7 @@ The pilot PM (Mac) uses it on 5 real meetings in 1 week. Each card is correct (r
 - 2026-10-22, after the first real test call: **auto-stop is removed**. Recording stops only when the user presses Stop in the widget (or Ctrl+C / STOP file). The reason: mic noise such as typing kept resetting the silence timer. The widget is Start → recording timer → Stop → rotating icon "Transcribing… / Writing your notes… / Updating My Meetings…" → Done.
 - First real call (3 min, script): calendar title matched, 6 to-dos (5 English + 1 Arabic), decisions and deliverables correct, page auto-updated. Small misses: "chase agency" got a date (30 Oct) instead of none; Arabic line 17 (colleague reviews Monday) was not in waiting-on.
 
-- 2026-10-23: the repo is public. Removed from all history: the real My Meetings and spike page links, and the real "Q4 roadmap" project name (plus the mock "Pulse"). History was rewritten with git-filter-repo; old tags v0.1.0 to v0.1.3 are replaced by v0.1.4.
+- 2026-10-23: the repo is public. Removed from all history: the real My Meetings and spike page links, and a real internal project name (plus a mock one) from the test call script. History was rewritten with git-filter-repo; old tags v0.1.0 to v0.1.3 are replaced by v0.1.4.
 - Analytics must never send transcripts, titles, attendees, card text or page links. Only counts, durations, success/failure, error class, OS, app version.
 
 ## Blockers / open
