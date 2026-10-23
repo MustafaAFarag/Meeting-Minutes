@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Lets the widget window listen to status and edge events. Dragging goes through the app's own start_drag command.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "clipboard-manager:allow-write-text"]
 }

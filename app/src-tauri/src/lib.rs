@@ -1,6 +1,8 @@
+mod desktop_entry;
 mod meetings;
 mod notch;
 mod runner;
+mod update;
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
@@ -17,6 +19,7 @@ use tauri::{
     AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, State, Window, WindowEvent,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as _};
+use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
@@ -26,6 +29,8 @@ use runner::RunState;
 
 /// The event the UI listens to. The payload is the core's `Status` as JSON.
 const STATUS_EVENT: &str = "mn-status";
+/// A newer GitHub release. Payload is `{ version, prompt }`.
+const UPDATE_EVENT: &str = "mn-update";
 /// Tells the UI which edge the tab hangs from ("left" or "right") after a drop.
 const EDGE_EVENT: &str = "mn-edge";
 const WINDOW_LABEL: &str = "main";
@@ -622,19 +627,49 @@ fn first_run_autostart(app: &AppHandle) {
     }
 }
 
+/// Linux: the autostart plugin writes `Exec=` with no quotes, so a path with spaces never
+/// starts. Quote it, and point an AppImage at `$APPIMAGE` rather than the temporary mount.
+/// No-op on Windows and macOS.
+#[cfg(target_os = "linux")]
+fn fix_linux_autostart(app: &AppHandle) {
+    let Some(home) = dirs::home_dir() else {
+        eprintln!("could not fix start at login: no home directory");
+        return;
+    };
+    let file = desktop_entry::autostart_desktop_path(&home, &app.package_info().name);
+    let current = match std::env::current_exe() {
+        Ok(path) => path.display().to_string(),
+        Err(err) => {
+            eprintln!("could not fix start at login: {err}");
+            return;
+        }
+    };
+    let appimage = std::env::var("APPIMAGE").ok();
+    let launch = desktop_entry::launch_target(appimage.as_deref(), &current);
+    if let Err(err) = desktop_entry::rewrite_autostart_file(&file, &launch) {
+        eprintln!("could not fix start at login: {err}");
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn fix_linux_autostart(_app: &AppHandle) {}
+
 fn autostart_enabled(app: &AppHandle) -> bool {
     app.autolaunch().is_enabled().unwrap_or(false)
 }
 
 fn toggle_autostart(app: &AppHandle, item: &CheckMenuItem<tauri::Wry>) {
     let launch = app.autolaunch();
-    let result = if autostart_enabled(app) {
-        launch.disable()
-    } else {
+    let turning_on = !autostart_enabled(app);
+    let result = if turning_on {
         launch.enable()
+    } else {
+        launch.disable()
     };
     if let Err(e) = result {
         eprintln!("could not change start at login: {e}");
+    } else if turning_on {
+        fix_linux_autostart(app);
     }
     // Show what is really set, whether or not the change worked.
     let _ = item.set_checked(autostart_enabled(app));
@@ -660,6 +695,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
             "show" => show_window(app),
             "hide" => hide_window(app),
             "autostart" => toggle_autostart(app, &login),
+            "update" => copy_update_from_tray(app),
             "quit" => {
                 let app = app.clone();
                 let state = Arc::clone(&*app.state::<Arc<RunState>>());
@@ -675,19 +711,162 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         tray = tray.icon(icon.clone());
     }
     tray.build(app)?;
+    if let Ok(mut slot) = app.state::<UpdateOffer>().menu.lock() {
+        *slot = Some(menu);
+    }
     Ok(())
+}
+
+/// The release the tray and the widget are currently offering, if any.
+struct UpdateOffer {
+    prompt: Mutex<String>,
+    menu: Mutex<Option<Menu<tauri::Wry>>>,
+    item: Mutex<Option<MenuItem<tauri::Wry>>>,
+}
+
+impl Default for UpdateOffer {
+    fn default() -> Self {
+        Self {
+            prompt: Mutex::new(String::new()),
+            menu: Mutex::new(None),
+            item: Mutex::new(None),
+        }
+    }
+}
+
+#[derive(Clone, serde::Serialize)]
+struct UpdatePayload {
+    version: String,
+    prompt: String,
+}
+
+/// Same fallback as the core config helper: `.` when the home directory cannot be found.
+fn home_dir() -> PathBuf {
+    dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// Adds (or renames) the tray item and tells the widget. Errors are logged; the app keeps running.
+fn announce_update(app: &AppHandle, version: &str, prompt: &str) {
+    let state = app.state::<UpdateOffer>();
+    if let Ok(mut slot) = state.prompt.lock() {
+        *slot = prompt.to_string();
+    }
+    let label = format!("Update available ({version}): copy update prompt");
+    let menu = state.menu.lock().ok().and_then(|slot| slot.clone());
+    match state.item.lock() {
+        Ok(mut slot) => {
+            if let Some(item) = slot.as_ref() {
+                if let Err(err) = item.set_text(&label) {
+                    eprintln!("could not rename the update tray item: {err}");
+                }
+            } else if let Some(menu) = menu {
+                match MenuItem::with_id(app, "update", &label, true, None::<&str>) {
+                    Ok(item) => {
+                        // Show, Hide, Start at login, then this, then Quit.
+                        if let Err(err) = menu.insert(&item, 3) {
+                            eprintln!("could not add the update tray item: {err}");
+                        } else {
+                            *slot = Some(item);
+                        }
+                    }
+                    Err(err) => eprintln!("could not create the update tray item: {err}"),
+                }
+            } else {
+                eprintln!("update check: the tray menu is not ready");
+            }
+        }
+        Err(_) => eprintln!("update check: the tray state is locked"),
+    }
+    log(&format!("update available {version}"));
+    let payload = UpdatePayload {
+        version: version.to_string(),
+        prompt: prompt.to_string(),
+    };
+    if let Err(err) = app.emit(UPDATE_EVENT, &payload) {
+        eprintln!("could not send the update to the window: {err}");
+    }
+}
+
+fn spawn_update_check(app: AppHandle) {
+    let built = thread::Builder::new()
+        .name("mn-update".into())
+        .spawn(move || {
+            thread::sleep(update::FIRST_CHECK);
+            loop {
+                match update::latest_tag() {
+                    Ok(tag) => {
+                        let current = app.package_info().version.to_string();
+                        if update::is_newer(&current, &tag) {
+                            if let Some(version) = update::display_version(&tag) {
+                                let prompt = update::update_prompt_for_home(&home_dir());
+                                announce_update(&app, &version, &prompt);
+                            }
+                        }
+                    }
+                    Err(err) => eprintln!("update check: {err}"),
+                }
+                thread::sleep(update::CHECK_EVERY);
+            }
+        });
+    if let Err(err) = built {
+        eprintln!("could not start the update check: {err}");
+    }
+}
+
+/// Tray click: no webview gesture, so the clipboard plugin copies the prompt.
+fn copy_update_from_tray(app: &AppHandle) {
+    let prompt = app
+        .state::<UpdateOffer>()
+        .prompt
+        .lock()
+        .ok()
+        .filter(|text| !text.is_empty())
+        .map(|text| text.clone());
+    let Some(prompt) = prompt else {
+        eprintln!("no update prompt to copy");
+        return;
+    };
+    if let Err(err) = app.clipboard().write_text(prompt) {
+        eprintln!("could not copy the update prompt: {err}");
+        return;
+    }
+    let shown = app
+        .notification()
+        .builder()
+        .title("Meeting Notes")
+        .body("Update prompt copied. Paste it into Claude.")
+        .show();
+    if let Err(err) = shown {
+        eprintln!("could not show the copy notification: {err}");
+    }
+}
+
+/// Fallback when the webview clipboard refuses the write. The button click is the gesture.
+#[tauri::command]
+fn copy_update_prompt(app: AppHandle, text: String) -> Result<(), String> {
+    app.clipboard()
+        .write_text(text)
+        .map_err(|err| format!("Could not copy: {err}"))
 }
 
 pub fn run() {
     tauri::Builder::default()
+        // First plugin: a second launch exits and this callback runs in the copy that is
+        // already running.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            log("second launch: showing the widget");
+            show_window(app);
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             None,
         ))
         .manage(Arc::new(RunState::default()))
         .manage(NotchState::load())
+        .manage(UpdateOffer::default())
         .invoke_handler(tauri::generate_handler![
             start,
             stop,
@@ -696,7 +875,8 @@ pub fn run() {
             set_size,
             current_edge,
             selftest_enabled,
-            start_drag
+            start_drag,
+            copy_update_prompt
         ])
         .setup(|app| {
             let handle = app.handle();
@@ -706,7 +886,12 @@ pub fn run() {
             // The window starts hidden (tauri.conf.json) so it never flashes at the wrong spot.
             show_window(handle);
             first_run_autostart(handle);
+            // Quote the Linux login entry on every start, including after a moved AppImage.
+            if autostart_enabled(handle) {
+                fix_linux_autostart(handle);
+            }
             build_tray(handle)?;
+            spawn_update_check(handle.clone());
             register_hotkeys(handle);
             if selftest_on() {
                 // No keyboard in the self-test: press "Ctrl+Alt+M" on a timer instead.
