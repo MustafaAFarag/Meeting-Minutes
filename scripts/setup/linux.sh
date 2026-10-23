@@ -275,7 +275,9 @@ done
 if [ -n "$MISSING_AUDIO" ]; then
   warn "Missing audio tools:$MISSING_AUDIO. Install pipewire-pulse (Arch/Fedora) or pulseaudio-utils (Ubuntu/Debian), or recording will not work."
 fi
-if ! { ldconfig -p 2>/dev/null | grep -q 'libfuse\.so\.2'; }; then
+# Not `grep -q`: it exits at the first match, ldconfig then dies of SIGPIPE, and pipefail
+# turns that into "not found" even when libfuse2 is installed.
+if ! { ldconfig -p 2>/dev/null | grep 'libfuse\.so\.2' >/dev/null; }; then
   warn "libfuse2 was not found; the AppImage may not start. Install fuse2 (Arch) or libfuse2 (Ubuntu/Debian)."
 fi
 

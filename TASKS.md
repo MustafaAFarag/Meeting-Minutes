@@ -25,14 +25,16 @@ The pilot PM (Mac) uses it on 5 real meetings in 1 week. Each card is correct (r
   - [x] Pushed to github.com/MustafaAFarag/Meeting-Minutes (public). v0.1.0 build failed (globstar in collect step; macOS /var vs /private/var in publish.rs:164); both fixed
   - [x] v0.1.1: Windows green; Mac failed at the whisper otool check (header per arch); Linux apt hung 4 h (cancelled). Fixed
   - [x] v0.1.2: Windows green; Mac passed whisper check + tests + installer, failed at Collect (`shopt globstar` missing in bash 3.2); Linux apt timed out at 10 min (slow azure.archive.ubuntu.com). Fixed: /usr/bin/find lookup; awalsh128/cache-apt-pkgs-action@v1.6.3 (apt-fast), 20 min limit
-  - [ ] **v0.1.3**: Mustafa pushes + tags (2026-10-23). Check: all jobs green + release has 7 files (MeetingNotes-macos.dmg, MeetingNotes-windows-setup.exe, MeetingNotes-linux.AppImage, mn-macos, mn-windows.exe, mn-linux, whisper-cli-macos). Status: `curl -s "https://api.github.com/repos/MustafaAFarag/Meeting-Minutes/actions/runs?per_page=1"`. If Linux times out again: re-run only that job (first successful install fills the apt cache). If Windows fails at Collect: it is the find change. On failure: give Mustafa a Claude in Chrome prompt for the failed step log (never ask for gh login)
+  - [x] **v0.1.3 released 2026-10-23** (run green on all 3 OS, 23 min): 7 files at releases/latest/download/. Release step still warns softprops/action-gh-release@v2 is Node 20 (v3 exists; not changed)
 - [x] Ask Claude in My Meetings (minutes .docx in CTC format, recaps, free questions)
 - [x] 6. One-sentence setup: `scripts/setup/{mac,linux,windows}`, SETUP.md, README, CLAUDE.md/AGENTS.md. linux.sh passed 2 runs in a sandboxed home
   - [x] name auto-detect (`--detect-name`: Mac account, Windows Office/365 name, Linux GECOS, Claude email guess); agent asks "Is your name X?"
   - [x] Mac whisper built in CI (`whisper-cli-macos`, universal, Metal); Homebrew only as fallback
   - [x] SETUP.md step 3 checks the M365 connector via `claude mcp list` (never blocks)
-  - [ ] real Linux install from the v0.1.1 release in a sandboxed HOME (real whisper + model download)
-  - [ ] mac.sh on the brother's MacBook (first real run), windows.ps1 on Mustafa's PC (first real run)
+  - [x] real Linux install from the v0.1.3 release in a sandboxed HOME: ok in 3 min, downloaded whisper transcribes jfk.wav, re-run idempotent. Fixed a false "libfuse2 not found" (grep -q + pipefail SIGPIPE)
+  - [ ] mac.sh on the brother's MacBook (first real run), windows.ps1 on Mustafa's PC (first real run; also check start-at-login after a restart, the Run key path has a space)
+  - [x] Mustafa's Arch autostart: tauri-plugin-autostart writes Exec= unquoted, and the dev path has spaces, so KDE skipped it. Exec now points at ~/.local/bin/meeting-notes. Toggling Start at login in the tray rewrites the broken path. AppImage installs are not affected (no spaces)
+  - [ ] later: quote the Linux Exec= path after enable() so dev paths with spaces work
 - [ ] 7. Install on pilot Mac, run the pilot week
 
 ## Decisions
