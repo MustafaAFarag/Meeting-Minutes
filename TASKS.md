@@ -52,11 +52,12 @@ The pilot PM (Mac) uses it on 5 real meetings in 1 week. Each card is correct (r
 - [ ] 10. PMs install, update and reopen on their own (plan: `~/.claude-company/plans/you-have-to-realize-gleaming-cat.md`)
   - Done when, on a clean Mac and Windows, with no terminal typing: install with only Authorize/Allow clicks; update tag N to N+1 from the copied prompt; quit, reopen from the icon, autostart after a reboot
   - [x] 10a. No client or product names in the tree; root `*.docx`/`*.zip` ignored; history rewritten locally (backup bundle in the session scratchpad). Force-push waits for the user's go
-  - [ ] 10b. My Meetings page: "Ask MM" floating popup with the animated Storbi avatar; transcript buttons on the links/attendees row (worker)
-  - [ ] 10c. App: single instance, "Update available" tray item + widget badge that copies the update prompt, Linux autostart `Exec=` quoting (worker)
-  - [ ] 10d. `mn doctor` health check + `claude` fallback to `~/.local/bin` (worker)
-  - [ ] 10e. Setup scripts install git + Claude Code + `claude auth login`, `--update` flag, desktop/menu icons; `UPDATE.md`, `CHANGELOG.md`, `.claude/settings.json` allowlist, `scripts/release.sh`
-  - [ ] 10f. Real-machine test on Mac and Windows, then tag the first release that has the update flow
+  - [x] 10b. My Meetings page: "Ask MM" floating popup with the animated Storbi avatar; transcript buttons on the links/attendees row (worker)
+  - [x] 10c. App: single instance, "Update available" tray item + widget badge that copies the update prompt, Linux autostart `Exec=` quoting (worker)
+  - [x] 10d. `mn doctor` health check + `claude` fallback to `~/.local/bin` (worker)
+  - [x] 10e. Setup scripts install git + Claude Code + `claude auth login`, `--update` flag, desktop/menu icons; `UPDATE.md`, `CHANGELOG.md`, `.claude/settings.json` allowlist, `scripts/release.sh`
+  - [ ] 10f. Force-push the rewritten history (waits for the user), then `scripts/release.sh 0.1.6`, push the tag, wait for CI
+  - [ ] 10g. Real-machine test on Mac and Windows: install from the README sentence, count prompts, update v0.1.6 to a test v0.1.7, reopen from the Dock/Desktop icon, reboot. Untested so far: windows.ps1 in PowerShell 5.1 (no pwsh here), Xcode-tools flow, `claude auth login` from the agent shell, Dock tile, Desktop .lnk, the 404 "still being prepared" path, whether Desktop honours the repo and user permission rules
 
 ## Decisions
 - Capture interface: each capture source is a process that writes raw s16le 16 kHz mono PCM to stdout. On Linux this is `pw-record`; on Mac it will be a Swift sidecar. The Rust core reads the stream, measures levels, writes WAV, and auto-stops after silence.
