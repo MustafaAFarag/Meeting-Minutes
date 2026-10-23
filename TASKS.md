@@ -49,6 +49,14 @@ The pilot PM (Mac) uses it on 5 real meetings in 1 week. Each card is correct (r
 - [ ] 9. Logging and usage analytics (design agreed first; see Decisions)
   - Local log file per machine for app + `mn` (widget.log exists; add mn runs, rotate at ~1 MB)
   - Central usage events, never meeting content: open questions to the user (service, whether events carry the user's email)
+- [ ] 10. PMs install, update and reopen on their own (plan: `~/.claude-company/plans/you-have-to-realize-gleaming-cat.md`)
+  - Done when, on a clean Mac and Windows, with no terminal typing: install with only Authorize/Allow clicks; update tag N to N+1 from the copied prompt; quit, reopen from the icon, autostart after a reboot
+  - [x] 10a. No client or product names in the tree; root `*.docx`/`*.zip` ignored; history rewritten locally (backup bundle in the session scratchpad). Force-push waits for the user's go
+  - [ ] 10b. My Meetings page: "Ask MM" floating popup with the animated Storbi avatar; transcript buttons on the links/attendees row (worker)
+  - [ ] 10c. App: single instance, "Update available" tray item + widget badge that copies the update prompt, Linux autostart `Exec=` quoting (worker)
+  - [ ] 10d. `mn doctor` health check + `claude` fallback to `~/.local/bin` (worker)
+  - [ ] 10e. Setup scripts install git + Claude Code + `claude auth login`, `--update` flag, desktop/menu icons; `UPDATE.md`, `CHANGELOG.md`, `.claude/settings.json` allowlist, `scripts/release.sh`
+  - [ ] 10f. Real-machine test on Mac and Windows, then tag the first release that has the update flow
 
 ## Decisions
 - Capture interface: each capture source is a process that writes raw s16le 16 kHz mono PCM to stdout. On Linux this is `pw-record`; on Mac it will be a Swift sidecar. The Rust core reads the stream, measures levels, writes WAV, and auto-stops after silence.
@@ -70,6 +78,15 @@ The pilot PM (Mac) uses it on 5 real meetings in 1 week. Each card is correct (r
 
 - 2026-10-23: the repo is public. Removed from all history: the real My Meetings and spike page links, and a real internal project name (plus a mock one) from the test call script. History was rewritten with git-filter-repo; old tags v0.1.0 to v0.1.3 are replaced by v0.1.4.
 - Analytics must never send transcripts, titles, attendees, card text or page links. Only counts, durations, success/failure, error class, OS, app version.
+
+- 2026-10-24, install/update for non-technical PMs (item 10):
+  - PMs use Mac and Windows only. Hiding the widget from screen sharing on Linux is not done (no OS API); it is a known limit.
+  - The repo stays public on the current account. A client and a product name were removed from all history again on 2026-10-24.
+  - PMs only get tagged releases. main can move freely; `scripts/release.sh` bumps, tags, and CI builds.
+  - git is required (setup installs it). The zip install path is gone.
+  - Claude Desktop's sign-in is not shared with the `claude` CLI that `mn` uses, so setup installs Claude Code with the official installer and runs `claude auth login` (the PM clicks Authorize).
+  - Updating: the app shows "Update available" and copies a prompt that points at `~/Meeting-Minutes/UPDATE.md`; the PM pastes it into Claude. Claude checks out the latest tag, re-runs setup with `--update`, runs `mn doctor`, and explains what is new from `CHANGELOG.md`.
+  - The "Ask MM" popup uses the Storbi avatar (MM = the app's nickname, "my meetings").
 
 ## Blockers / open
 - Using speakers instead of headphones means the mic re-records the other side, so lines get duplicated. v1 says "use headphones"; dedup is a later task.
