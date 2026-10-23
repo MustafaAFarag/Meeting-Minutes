@@ -17,6 +17,7 @@ The pilot PM (Mac) uses it on 5 real meetings in 1 week. Each card is correct (r
   - [x] auto-stop removed; plain widget (Start/levels/Stop/spinner/Done) — user confirmed it works
   - [x] notch pill at top edge, hover unfold, drag + remembered position, Ctrl+Alt+M show/hide, Ctrl+Alt+R record toggle, start at login (tray toggle). Folded look checked by screenshot; unfold/drag/hotkeys need the user's check
   - [ ] 9:00 notification
+  - [x] "Still recording" system notification at 30 min, then every 30 min (never auto-stops). `MN_REMIND_SECS` shortens it for tests. Unit-tested; live check pending on Linux, Windows, Mac
 - [ ] 5. Mac + Windows (decided 2026-10-22: both now; Mustafa tests on his brother's MacBook and his own Windows PC; PM test is 2026-10-23)
   - [x] A: `mn capture mic|system` via cpal (Windows loopback + mic, Mac mic), per-OS capture defaults, CREATE_NO_WINDOW, claude.cmd resolution
   - [x] B: `mac/audiotap` Swift helper for Mac system audio, Core Audio process tap
@@ -36,6 +37,13 @@ The pilot PM (Mac) uses it on 5 real meetings in 1 week. Each card is correct (r
   - [x] Mustafa's Arch autostart: tauri-plugin-autostart writes Exec= unquoted, and the dev path has spaces, so KDE skipped it. Exec now points at ~/.local/bin/meeting-notes. Toggling Start at login in the tray rewrites the broken path. AppImage installs are not affected (no spaces)
   - [ ] later: quote the Linux Exec= path after enable() so dev paths with spaces work
 - [ ] 7. Install on pilot Mac, run the pilot week
+- [ ] 8. Branding by account (after the Windows + Mac tests pass)
+  - Claude account email ends with `@ctchealth.ch`: keep the ctcHealth logo, colours, and "CTC Health" in the prompts and the minutes .docx
+  - Any other account: a generic look picked from https://styles.refero.design/ and no CTC name in prompts or .docx
+  - The email comes from `claude auth status` at setup time; store it as a config key so the app and `mn init-page` can choose
+- [ ] 9. Logging and usage analytics (design agreed first; see Decisions)
+  - Local log file per machine for app + `mn` (widget.log exists; add mn runs, rotate at ~1 MB)
+  - Central usage events, never meeting content: open questions to the user (service, whether events carry the user's email)
 
 ## Decisions
 - Capture interface: each capture source is a process that writes raw s16le 16 kHz mono PCM to stdout. On Linux this is `pw-record`; on Mac it will be a Swift sidecar. The Rust core reads the stream, measures levels, writes WAV, and auto-stops after silence.
@@ -54,6 +62,9 @@ The pilot PM (Mac) uses it on 5 real meetings in 1 week. Each card is correct (r
 
 - 2026-10-22, after the first real test call: **auto-stop is removed**. Recording stops only when the user presses Stop in the widget (or Ctrl+C / STOP file). The reason: mic noise such as typing kept resetting the silence timer. The widget is Start → recording timer → Stop → rotating icon "Transcribing… / Writing your notes… / Updating My Meetings…" → Done.
 - First real call (3 min, script): calendar title matched, 6 to-dos (5 English + 1 Arabic), decisions and deliverables correct, page auto-updated. Small misses: "chase agency" got a date (30 Oct) instead of none; Arabic line 17 (colleague reviews Monday) was not in waiting-on.
+
+- 2026-10-23: the repo is public. Removed from all history: the real My Meetings and spike page links, and the real "Q4 roadmap" project name (plus the mock "Pulse"). History was rewritten with git-filter-repo; old tags v0.1.0 to v0.1.3 are replaced by v0.1.4.
+- Analytics must never send transcripts, titles, attendees, card text or page links. Only counts, durations, success/failure, error class, OS, app version.
 
 ## Blockers / open
 - Using speakers instead of headphones means the mic re-records the other side, so lines get duplicated. v1 says "use headphones"; dedup is a later task.
