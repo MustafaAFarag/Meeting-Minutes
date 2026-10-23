@@ -18,6 +18,7 @@ use tauri::{
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as _};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
 
 use notch::{Anchor, Edge, Rect, WidgetPrefs};
@@ -64,7 +65,19 @@ fn run_job(app: &AppHandle, state: &RunState, job: Job) -> Result<(), String> {
                 max_seconds: None,
                 interrupt: Arc::clone(&state.interrupt),
             };
-            let recorded = mn_core::record(&cfg, &opts, emit);
+            let every = runner::remind_every();
+            let reminders = AtomicU64::new(0);
+            let on_status = |status: Status| {
+                if let Status::Recording { elapsed, .. } = &status {
+                    let sent = reminders.load(Ordering::SeqCst);
+                    if let Some(n) = runner::reminder_due(*elapsed, sent, every) {
+                        reminders.store(n, Ordering::SeqCst);
+                        remind_still_recording(app, *elapsed / 60);
+                    }
+                }
+                emit(status);
+            };
+            let recorded = mn_core::record(&cfg, &opts, on_status);
             state.set_recording(false);
             let dir = recorded.map_err(describe)?;
             state.set_last_session(Some(dir.clone()));
@@ -73,6 +86,23 @@ fn run_job(app: &AppHandle, state: &RunState, job: Job) -> Result<(), String> {
         Job::Process(dir) => dir,
     };
     mn_core::process(&cfg, &session, emit).map_err(describe)
+}
+
+/// A system notification that the recording is still running. Failures are only logged; the
+/// recording carries on either way.
+fn remind_still_recording(app: &AppHandle, minutes: u64) {
+    log(&format!("reminder: still recording after {minutes} min"));
+    let shown = app
+        .notification()
+        .builder()
+        .title("Still recording")
+        .body(format!(
+            "Meeting Notes has been recording for {minutes} minutes. Press Stop when the meeting is over."
+        ))
+        .show();
+    if let Err(e) = shown {
+        log(&format!("could not show the reminder: {e}"));
+    }
 }
 
 /// Starts `job` on a background thread. Errors only if a run is already active.
@@ -628,6 +658,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             None,

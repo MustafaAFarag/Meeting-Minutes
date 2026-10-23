@@ -77,9 +77,41 @@ impl RunState {
     }
 }
 
+/// Meetings usually take about 30 minutes. A recording that runs longer gets a reminder at 30
+/// minutes and again every 30 minutes after that. It never stops by itself.
+pub const REMIND_EVERY_SECS: u64 = 30 * 60;
+
+/// The reminder interval. `MN_REMIND_SECS` shortens it for testing.
+pub fn remind_every() -> u64 {
+    std::env::var("MN_REMIND_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|&secs| secs > 0)
+        .unwrap_or(REMIND_EVERY_SECS)
+}
+
+/// The number of the reminder that is due at `elapsed` seconds (1 for the first), if it is newer
+/// than `sent`, the last one already shown.
+pub fn reminder_due(elapsed: u64, sent: u64, every: u64) -> Option<u64> {
+    let due = elapsed / every;
+    (due > sent).then_some(due)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reminders_come_once_per_interval() {
+        let every = REMIND_EVERY_SECS;
+        assert_eq!(reminder_due(0, 0, every), None);
+        assert_eq!(reminder_due(every - 1, 0, every), None);
+        assert_eq!(reminder_due(every, 0, every), Some(1));
+        assert_eq!(reminder_due(every + 5, 1, every), None);
+        assert_eq!(reminder_due(2 * every, 1, every), Some(2));
+        // A gap in the status events skips ahead instead of firing the missed ones one by one.
+        assert_eq!(reminder_due(3 * every + 1, 1, every), Some(3));
+    }
 
     #[test]
     fn second_begin_is_refused_while_the_first_is_held() {
