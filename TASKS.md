@@ -19,7 +19,7 @@ The pilot PM (Mac) uses it on 5 real meetings in 1 week. Each card is correct (r
   - [ ] 9:00 notification
   - [x] fixed size: resizing is turned off after the size is set (Linux: GTK size request = the size, because a non-resizable GTK window ignores set_size and stays 200x200). No resize cursors at the edges. Linux starts on a non-primary monitor when there is one, because Linux cannot hide the widget from screen sharing (Mac and Windows can, tested). Checked on Mustafa's 2 monitors via KWin: resizeable=false, HDMI-A-1, 44x170
   - [x] "Still recording" system notification at 30 min, then every 30 min (never auto-stops). `MN_REMIND_SECS` shortens it for tests. Unit-tested; live check pending on Linux, Windows, Mac
-- [ ] 5. Mac + Windows (decided 2026-10-22: both now; Mustafa tests on his brother's MacBook and his own Windows PC; PM test is 2026-10-23)
+- [ ] 5. Mac + Windows (decided 2026-10-22: both now; tested on a test Mac and a Windows PC; PM test is 2026-10-23)
   - [x] A: `mn capture mic|system` via cpal (Windows loopback + mic, Mac mic), per-OS capture defaults, CREATE_NO_WINDOW, claude.cmd resolution
   - [x] B: `mac/audiotap` Swift helper for Mac system audio, Core Audio process tap
   - [x] C: Tauri bundling (.dmg / NSIS / AppImage) + `.github/workflows/build.yml`. Releases use fixed asset names
@@ -34,7 +34,7 @@ The pilot PM (Mac) uses it on 5 real meetings in 1 week. Each card is correct (r
   - [x] Mac whisper built in CI (`whisper-cli-macos`, universal, Metal); Homebrew only as fallback
   - [x] SETUP.md step 3 checks the M365 connector via `claude mcp list` (never blocks)
   - [x] real Linux install from the v0.1.3 release in a sandboxed HOME: ok in 3 min, downloaded whisper transcribes jfk.wav, re-run idempotent. Fixed a false "libfuse2 not found" (grep -q + pipefail SIGPIPE)
-  - [ ] mac.sh on the brother's MacBook (first real run), windows.ps1 on Mustafa's PC (first real run; also check start-at-login after a restart, the Run key path has a space)
+  - [ ] mac.sh on a test Mac (first real run), windows.ps1 on a Windows PC (first real run; also check start-at-login after a restart, the Run key path has a space)
   - [x] Mustafa's Arch autostart: tauri-plugin-autostart writes Exec= unquoted, and the dev path has spaces, so KDE skipped it. Exec now points at ~/.local/bin/meeting-notes. Toggling Start at login in the tray rewrites the broken path. AppImage installs are not affected (no spaces)
   - [x] KDE: the widget stayed on one virtual desktop. KWin ignores the sticky hint and _NET_WM_DESKTOP requests for it; a KWin window rule (class contains "eeting-notes", desktops = all, force) in ~/.config/kwinrulesrc fixes it. Set on Mustafa's Arch 2026-10-23
   - [ ] later: linux.sh adds that KWin rule when the desktop is KDE; check virtual desktops on Windows and Mac (Spaces) in the tests

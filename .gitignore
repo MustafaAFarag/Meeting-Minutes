@@ -5,7 +5,8 @@ node_modules/
 .delegate/
 .local-samples/
 artifact/ARTIFACT_URL.txt
-.claude/
+.claude/*
+!.claude/settings.json
 docs/*.pdf
 
 # Tauri widget
@@ -13,3 +14,8 @@ app/src-tauri/target
 app/src-tauri/gen
 app/src-tauri/binaries/
 artifact/.test/
+
+# Never commit meeting outputs or stray downloads dropped in the repo root
+/*.docx
+/*.zip
+artifact/*.docx
