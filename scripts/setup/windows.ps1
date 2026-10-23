@@ -4,6 +4,8 @@
 #   powershell -ExecutionPolicy Bypass -File scripts\setup\windows.ps1 -DetectName
 #   powershell -ExecutionPolicy Bypass -File scripts\setup\windows.ps1 -Name "Full Name" `
 #       [-Model small|turbo] [-SkipPage] [-SkipLaunch] [-ReleaseBase <url-or-dir>]
+#   powershell -ExecutionPolicy Bypass -File scripts\setup\windows.ps1 -Update
+#       (an update: the name comes from the existing config)
 #
 # Last line of output: SETUP_RESULT {json}
 # This file is ASCII only on purpose: Windows PowerShell 5.1 reads a file without a BOM as ANSI.
@@ -13,7 +15,10 @@ param(
     [string]$Model = '',
     [switch]$SkipPage,
     [switch]$SkipLaunch,
-    [string]$ReleaseBase = 'https://github.com/MustafaAFarag/Meeting-Minutes/releases/latest/download',
+    [switch]$Update,
+    # Default (empty): the GitHub release of the tag this folder is checked out at, or releases/latest/download
+    # if it is not at a tag (a dev checkout of main, or no git). A value given here always wins.
+    [string]$ReleaseBase = '',
     # Hidden, for tests.
     [string]$WhisperCli = '',
     [string]$WhisperModel = '',
@@ -159,6 +164,11 @@ $ProgressPreference = 'SilentlyContinue'
 $WhisperUrl = 'https://github.com/ggml-org/whisper.cpp/releases/download/b5130/whisper-bin-x64.zip'
 $ModelUrl = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main'
 $VadUrl = 'https://huggingface.co/ggml-org/whisper-vad/resolve/main'
+$ClaudeInstallUrl = 'https://claude.ai/install.ps1'
+$LatestBase = 'https://github.com/MustafaAFarag/Meeting-Minutes/releases/latest/download'
+$TagBase = 'https://github.com/MustafaAFarag/Meeting-Minutes/releases/download'
+$ReleaseTag = ''
+$ReleaseLabel = ''
 $Total = 8
 $script:StepNumber = 0
 $script:Warnings = New-Object System.Collections.ArrayList
@@ -177,7 +187,7 @@ function Add-Warning([string]$Text) {
 
 function Fail([string]$Text) {
     [Console]::Error.WriteLine("ERROR: $Text")
-    $result = [ordered]@{ ok = $false; error = $Text }
+    $result = [ordered]@{ ok = $false; update = [bool]$Update; error = $Text }
     Write-Output ('SETUP_RESULT ' + (ConvertTo-AsciiJson $result))
     exit 1
 }
@@ -222,16 +232,23 @@ function Find-Tool([string]$ToolName, [string[]]$Fallbacks) {
 function Get-Download([string]$Url, [string]$Dest) {
     $part = $Dest + '.part'
     $ok = $false
+    $notFound = $false
     $lastError = ''
-    for ($i = 1; ($i -le 3) -and (-not $ok); $i++) {
+    for ($i = 1; ($i -le 3) -and (-not $ok) -and (-not $notFound); $i++) {
         try {
             if (Test-Path -LiteralPath $part) { Remove-Item -LiteralPath $part -Force }
             Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $part
             $ok = $true
         } catch {
             $lastError = $_.Exception.Message
-            Start-Sleep -Seconds 3
+            $status = 0
+            try { $status = [int]$_.Exception.Response.StatusCode } catch { }
+            if ($status -eq 404) { $notFound = $true } else { Start-Sleep -Seconds 3 }
         }
+    }
+    if ((-not $ok) -and $notFound -and $ReleaseTag -and $Url.StartsWith($ReleaseBase.TrimEnd('/') + '/')) {
+        # A tag whose release CI is still building has no files yet.
+        Fail 'This version is still being prepared. Wait 30 minutes, then run this script again.'
     }
     if (-not $ok) {
         Fail "Could not download $Url. Check the internet connection, then run this script again. ($lastError)"
@@ -290,6 +307,31 @@ function Stop-App([string]$ExePath) {
     }
 }
 
+# Makes a shortcut to the app unless one that points at it is already there. Throws on failure.
+function Set-AppShortcut([string]$LinkPath, [string]$ExePath) {
+    $shell = New-Object -ComObject WScript.Shell
+    if (Test-Path -LiteralPath $LinkPath) {
+        $existing = $shell.CreateShortcut($LinkPath)
+        if ([string]$existing.TargetPath -ieq $ExePath) { return }
+    }
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $LinkPath) | Out-Null
+    $link = $shell.CreateShortcut($LinkPath)
+    $link.TargetPath = $ExePath
+    $link.WorkingDirectory = Split-Path -Parent $ExePath
+    $link.IconLocation = $ExePath + ',0'
+    $link.Description = 'Meeting Notes'
+    $link.Save()
+}
+
+# The Desktop icon, and a Start-menu entry if the installer did not make one.
+function Add-AppShortcuts([string]$ExePath) {
+    $desktop = [Environment]::GetFolderPath('Desktop')
+    Set-AppShortcut (Join-Path $desktop 'Meeting Notes.lnk') $ExePath
+    $programs = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
+    $found = @(Get-ChildItem -LiteralPath $programs -Recurse -Filter 'Meeting Notes*.lnk' -File -ErrorAction SilentlyContinue)
+    if ($found.Count -eq 0) { Set-AppShortcut (Join-Path $programs 'Meeting Notes.lnk') $ExePath }
+}
+
 # ---------------------------------------------------------------- main
 try {
     $UserHome = [Environment]::GetFolderPath('UserProfile')
@@ -304,20 +346,69 @@ try {
     Write-Step 'Checking this computer'
     if (-not [Environment]::Is64BitOperatingSystem) { Fail 'Only 64-bit Windows 10 or 11 is supported.' }
 
-    $Claude = Find-Tool 'claude' @(
+    # Where the binaries come from. An explicit -ReleaseBase always wins. Otherwise: the release of the tag
+    # this repo folder is checked out at (so going back to an old tag installs the old binaries), or the
+    # latest release (a dev checkout of main, or no git).
+    if ($ReleaseBase) {
+        $ReleaseBase = $ReleaseBase.TrimEnd('/')
+        $ReleaseLabel = 'custom'
+        Write-Host "Using release files from $ReleaseBase"
+    } else {
+        $ReleaseBase = $LatestBase
+        $ReleaseLabel = 'latest'
+        try {
+            $repoDir = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+            $gitExe = Find-Tool 'git' @(
+                ($env:ProgramFiles + '\Git\cmd\git.exe'),
+                (${env:ProgramFiles(x86)} + '\Git\cmd\git.exe'),
+                ($env:LOCALAPPDATA + '\Programs\Git\cmd\git.exe'))
+            if ($repoDir -and $gitExe) {
+                $desc = Invoke-Native $gitExe @('-C', $repoDir, 'describe', '--tags', '--exact-match', '--match', 'v[0-9]*')
+                $descTag = ([string]($desc.Lines | Select-Object -First 1)).Trim()
+                if (($desc.Code -eq 0) -and ($descTag -match '^v\d')) {
+                    $ReleaseTag = $descTag
+                    $ReleaseLabel = $descTag
+                    $ReleaseBase = $TagBase + '/' + $descTag
+                }
+            }
+        } catch { }
+        Write-Host "Using release $ReleaseLabel"
+    }
+
+    if ($Update -and (-not (Test-Path -LiteralPath $Config))) {
+        Fail "There is no earlier install to update (no config file at $Config). Do a normal install instead: follow SETUP.md from step 0 and run this script with -Name `"Full Name`"."
+    }
+
+    # The standalone Claude Code that mn calls in the background. Claude Desktop's own sign-in is not
+    # shared with it, so it is installed here with the official installer when missing (a file, never piped).
+    $ClaudeFallbacks = @(
         (Join-Path $UserHome '.local\bin\claude.exe'),
         (Join-Path $env:APPDATA 'npm\claude.cmd'),
         (Join-Path $UserHome '.claude\local\claude.exe'))
+    $Claude = Find-Tool 'claude' $ClaudeFallbacks
     if (-not $Claude) {
-        Fail 'Claude Code is not installed. Install it from https://claude.com/claude-code, log in, then run this script again.'
+        Write-Host 'Installing Claude Code (about 1 minute)...'
+        $claudeInstaller = Join-Path $env:TEMP 'claude-install.ps1'
+        Get-Download $ClaudeInstallUrl $claudeInstaller
+        $ci = Invoke-Native 'powershell.exe' @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $claudeInstaller)
+        Remove-Item -LiteralPath $claudeInstaller -Force -ErrorAction SilentlyContinue
+        if ($ci.Code -ne 0) {
+            $ciLast = [string]($ci.Lines | Select-Object -Last 1)
+            Fail "Could not install Claude Code ($ciLast). Check the internet connection, then run this script again."
+        }
+        # The PATH of this session is not refreshed, so look in the usual folder too.
+        $Claude = Find-Tool 'claude' $ClaudeFallbacks
+        if (-not $Claude) {
+            Fail "Claude Code was installed but was not found at $UserHome\.local\bin\claude.exe. Run this script again."
+        }
     }
     $auth = Invoke-Native $Claude @('auth', 'status')
     $loggedIn = ($auth.Code -eq 0) -and (($auth.Lines -join ' ') -notmatch '"loggedIn"\s*:\s*false')
     if (-not $loggedIn) {
         if ($SkipPage) {
-            Add-Warning "Claude Code is not logged in. Run 'claude' once and sign in before the first recording."
+            Add-Warning 'Claude Code is not signed in. Do the sign-in step of SETUP.md (step 2) before the first recording.'
         } else {
-            Fail "Claude Code is not logged in. Ask the user to run 'claude' in a terminal and sign in, then run this script again."
+            Fail "Claude Code is not signed in. Do the sign-in step of SETUP.md (step 2): run '$Claude auth login' (the user clicks Authorize in the browser), or have the user type 'claude' in PowerShell and sign in. Then run this script again."
         }
     }
     $Codex = Find-Tool 'codex' @((Join-Path $env:APPDATA 'npm\codex.cmd'))
@@ -333,6 +424,9 @@ try {
         $oldLines = [System.IO.File]::ReadAllLines($Config)
         $OldNotesLine = [string]($oldLines | Where-Object { $_ -match '^notes_dir\s*=' } | Select-Object -First 1)
         $OldNameLine = [string]($oldLines | Where-Object { $_ -match '^my_name\s*=' } | Select-Object -First 1)
+    }
+    if ((-not $Name) -and (-not $OldNameLine) -and $Update) {
+        Fail "The existing config at $Config has no name, so this cannot be an update. Do a normal install instead: follow SETUP.md from step 0 and run this script with -Name `"Full Name`"."
     }
     if ((-not $Name) -and (-not $OldNameLine)) {
         Fail 'The persons full name is missing. Ask the user for their full name and run this script again with -Name "Full Name".'
@@ -352,6 +446,11 @@ try {
     $AppExe = Find-AppExe
     if (-not $AppExe) {
         Fail 'The installer finished but Meeting Notes.exe was not found under %LOCALAPPDATA%. Show this message to the developer.'
+    }
+    try {
+        Add-AppShortcuts $AppExe
+    } catch {
+        Add-Warning "Could not add the Meeting Notes icon to the Desktop ($($_.Exception.Message)). The user can open it from the Start menu."
     }
 
     # ------------------------------------------------------------ 3. mn
@@ -548,7 +647,9 @@ try {
         claude_cli        = $Claude
         page_url          = $pageValue
         launched          = $Launched
-        warnings          = @($script:Warnings.ToArray())
+        update            = [bool]$Update
+        release           = $ReleaseLabel
+        warnings         = @($script:Warnings.ToArray())
     }
     Write-Output ('SETUP_RESULT ' + (ConvertTo-AsciiJson $result))
 } catch {

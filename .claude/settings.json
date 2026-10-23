@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C *)",
+      "Bash(git clone https://github.com/MustafaAFarag/Meeting-Minutes *)",
+      "Bash(git --version)",
+      "Bash(xcode-select -p)",
+      "Bash(xcode-select --install)",
+      "Bash(uname -s)",
+      "Bash(printenv HOME)",
+      "Bash(bash scripts/setup/mac.sh *)",
+      "Bash(bash scripts/setup/linux.sh *)",
+      "Bash(claude auth *)",
+      "PowerShell(git -C *)",
+      "PowerShell(git clone https://github.com/MustafaAFarag/Meeting-Minutes *)",
+      "PowerShell(git --version)",
+      "PowerShell(powershell -ExecutionPolicy Bypass -File scripts\\setup\\windows.ps1 *)",
+      "PowerShell(powershell -ExecutionPolicy Bypass -File scripts/setup/windows.ps1 *)"
+    ]
+  }
+}

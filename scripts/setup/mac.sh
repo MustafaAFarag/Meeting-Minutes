@@ -5,11 +5,14 @@
 #   bash scripts/setup/mac.sh --detect-name
 #   bash scripts/setup/mac.sh --name "Full Name" [--model small|turbo] [--skip-page] [--skip-launch]
 #                             [--release-base <url-or-dir>]
+#   bash scripts/setup/mac.sh --update     (an update: the name comes from the existing config)
 #
 # Last line of output: SETUP_RESULT {json}
 set -euo pipefail
 
 DEFAULT_BASE="https://github.com/MustafaAFarag/Meeting-Minutes/releases/latest/download"
+TAG_BASE="https://github.com/MustafaAFarag/Meeting-Minutes/releases/download"
+CLAUDE_INSTALL_URL="https://claude.ai/install.sh"
 MODEL_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
 VAD_URL="https://huggingface.co/ggml-org/whisper-vad/resolve/main"
 TOTAL=8
@@ -18,7 +21,10 @@ NAME=""
 MODEL=""
 SKIP_PAGE=0
 SKIP_LAUNCH=0
-RELEASE_BASE="$DEFAULT_BASE"
+UPDATE=0
+RELEASE_BASE=""
+RELEASE_TAG=""
+RELEASE_LABEL=""
 WHISPER_CLI_OVERRIDE=""   # hidden, for tests
 WHISPER_MODEL_OVERRIDE="" # hidden, for tests
 
@@ -171,9 +177,13 @@ warn() {
   WARN_JSON="$WARN_JSON\"$(json_str "$1")\""
 }
 
+bool_json() {
+  if [ "$1" -eq 1 ]; then printf 'true'; else printf 'false'; fi
+}
+
 die() {
   printf 'ERROR: %s\n' "$1" >&2
-  printf 'SETUP_RESULT {"ok":false,"error":"%s"}\n' "$(json_str "$1")"
+  printf 'SETUP_RESULT {"ok":false,"update":%s,"error":"%s"}\n' "$(bool_json "$UPDATE")" "$(json_str "$1")"
   exit 1
 }
 
@@ -185,7 +195,9 @@ Usage: bash scripts/setup/mac.sh --name "Full Name" [options]
   --model small|turbo       speech model (default: turbo on Apple Silicon, small on Intel)
   --skip-page               do not create the My Meetings page
   --skip-launch             do not start the widget
-  --release-base <url|dir>  where the release files are (default: GitHub releases/latest/download)
+  --update                  update an existing install (the name is taken from the old config)
+  --release-base <url|dir>  where the release files are (default: the GitHub release of the tag this folder is
+                            checked out at, or releases/latest/download if it is not at a tag)
 USAGE
 }
 
@@ -197,6 +209,7 @@ while [ "$#" -gt 0 ]; do
     --model=*) MODEL="${1#--model=}"; shift ;;
     --skip-page) SKIP_PAGE=1; shift ;;
     --skip-launch) SKIP_LAUNCH=1; shift ;;
+    --update) UPDATE=1; shift ;;
     --release-base) [ "$#" -ge 2 ] || die "--release-base needs a value."; RELEASE_BASE="$2"; shift 2 ;;
     --release-base=*) RELEASE_BASE="${1#--release-base=}"; shift ;;
     --whisper-cli) [ "$#" -ge 2 ] || die "--whisper-cli needs a value."; WHISPER_CLI_OVERRIDE="$2"; shift 2 ;;
@@ -205,7 +218,25 @@ while [ "$#" -gt 0 ]; do
     *) die "Unknown option $1. Run with --help to see the options." ;;
   esac
 done
-RELEASE_BASE="${RELEASE_BASE%/}"
+
+# Where the binaries come from. An explicit --release-base always wins. Otherwise: the release of the
+# tag this repo folder is checked out at (so going back to an old tag installs the old binaries), or
+# the latest release (a dev checkout of main, or no git). On a Mac without the developer tools, git is
+# only a stub that opens Apple's install window, so it is not called then.
+if [ -n "$RELEASE_BASE" ]; then
+  RELEASE_BASE="${RELEASE_BASE%/}"
+  RELEASE_LABEL="custom"
+else
+  RELEASE_BASE="$DEFAULT_BASE"
+  RELEASE_LABEL="latest"
+  REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)" || REPO_DIR=""
+  if [ -n "$REPO_DIR" ] && xcode-select -p >/dev/null 2>&1 && command -v git >/dev/null 2>&1; then
+    TAG="$(git -C "$REPO_DIR" describe --tags --exact-match --match 'v[0-9]*' 2>/dev/null | head -n 1)" || TAG=""
+    case "$TAG" in
+      v[0-9]*) RELEASE_TAG="$TAG"; RELEASE_LABEL="$TAG"; RELEASE_BASE="$TAG_BASE/$TAG" ;;
+    esac
+  fi
+fi
 
 case "$MODEL" in
   ""|small|turbo) ;;
@@ -214,9 +245,24 @@ esac
 
 # download <url> <dest>: writes to <dest>.part first, so a broken download never looks finished.
 download() {
+  local code
   rm -f "$2.part"
-  curl -fsSL --retry 3 --retry-delay 3 -o "$2.part" "$1" ||
-    die "Could not download $1. Check the internet connection, then run this script again."
+  code="$(curl -sSL --retry 3 --retry-delay 3 -o "$2.part" -w '%{http_code}' "$1")" || code="000"
+  case "$code" in
+    2??) ;;
+    404)
+      rm -f "$2.part"
+      # A tag whose release CI is still building has no files yet.
+      if [ -n "$RELEASE_TAG" ] && [ "${1#"$RELEASE_BASE"/}" != "$1" ]; then
+        die "This version is still being prepared. Wait 30 minutes, then run this script again."
+      fi
+      die "Could not download $1. Check the internet connection, then run this script again."
+      ;;
+    *)
+      rm -f "$2.part"
+      die "Could not download $1. Check the internet connection, then run this script again."
+      ;;
+  esac
   mv -f "$2.part" "$2"
 }
 
@@ -253,8 +299,23 @@ find_brew() {
   return 0
 }
 
+# Puts the app in the Dock unless a tile for it is already there. The app has no Dock icon while it
+# runs, so the tile is how the user opens it again. A failure here is only a warning.
+add_to_dock() {
+  local app="$1" encoded tile
+  encoded="$(perl -e 'print join("", map { /[A-Za-z0-9_.\/~-]/ ? $_ : sprintf("%%%02X", ord($_)) } split(//, $ARGV[0]))' "$app")" || return 1
+  [ -n "$encoded" ] || return 1
+  if defaults read com.apple.dock persistent-apps 2>/dev/null | grep -F "file://$encoded" >/dev/null 2>&1; then
+    return 0
+  fi
+  tile="<dict><key>tile-data</key><dict><key>file-data</key><dict><key>_CFURLString</key><string>file://$encoded/</string><key>_CFURLStringType</key><integer>15</integer></dict></dict></dict>"
+  defaults write com.apple.dock persistent-apps -array-add "$tile" || return 1
+  killall Dock >/dev/null 2>&1 || true
+}
+
 # ---------------------------------------------------------------- 1. checks
 step "Checking this computer"
+if [ "$RELEASE_LABEL" = "custom" ]; then echo "Using release files from $RELEASE_BASE"; else echo "Using release $RELEASE_LABEL"; fi
 [ "$(uname -s)" = "Darwin" ] || die "This script is for a Mac. Use linux.sh on Linux or windows.ps1 on Windows."
 command -v curl >/dev/null 2>&1 || die "curl is missing. This Mac looks broken; ask the developer."
 
@@ -272,15 +333,30 @@ if [ -z "$MODEL" ]; then
   if [ "$APPLE_SILICON" -eq 1 ]; then MODEL="turbo"; else MODEL="small"; fi
 fi
 
-CLAUDE=""
-if command -v claude >/dev/null 2>&1; then
-  CLAUDE="$(command -v claude)"
-else
-  for c in "$HOME/.local/bin/claude" "$HOME/.claude/local/claude" /opt/homebrew/bin/claude /usr/local/bin/claude "$HOME/.npm-global/bin/claude"; do
-    if [ -x "$c" ]; then CLAUDE="$c"; break; fi
-  done
+CONFIG_DIR="$HOME/Library/Application Support/meeting-notes"
+CONFIG="$CONFIG_DIR/config.toml"
+WHISPER_BIN_DIR="$CONFIG_DIR/bin"
+WHISPER_BIN="$WHISPER_BIN_DIR/whisper-cli"
+BIN_DIR="$HOME/.local/bin"
+MN="$BIN_DIR/mn"
+
+if [ "$UPDATE" -eq 1 ] && [ ! -f "$CONFIG" ]; then
+  die "There is no earlier install to update (no config file at $CONFIG). Do a normal install instead: follow SETUP.md from step 0 and run this script with --name \"Full Name\"."
 fi
-[ -n "$CLAUDE" ] || die "Claude Code is not installed. Install it from https://claude.com/claude-code, log in, then run this script again."
+
+WORK_DIR="$(mktemp -d)"
+
+# The standalone Claude Code that 'mn' calls in the background. Claude Desktop's own sign-in is not
+# shared with it, so it is installed here with the official installer (a file, never piped into a shell).
+CLAUDE="$(find_claude_for_detection 2>/dev/null || true)"
+if [ -z "$CLAUDE" ]; then
+  echo "Installing Claude Code (about 1 minute)..."
+  download "$CLAUDE_INSTALL_URL" "$WORK_DIR/claude-install.sh"
+  bash "$WORK_DIR/claude-install.sh" >"$WORK_DIR/claude-install.log" 2>&1 ||
+    die "Could not install Claude Code ($(tail -n 1 "$WORK_DIR/claude-install.log" | tr -d '\r')). Check the internet connection, then run this script again."
+  CLAUDE="$(find_claude_for_detection 2>/dev/null || true)"
+  [ -n "$CLAUDE" ] || die "Claude Code was installed but was not found at $HOME/.local/bin/claude. Run this script again."
+fi
 
 AUTH_OUT=""
 AUTH_OK=1
@@ -288,19 +364,13 @@ AUTH_OUT="$("$CLAUDE" auth status 2>&1)" || AUTH_OK=0
 if printf '%s' "$AUTH_OUT" | grep -Eq '"loggedIn"[[:space:]]*:[[:space:]]*false'; then AUTH_OK=0; fi
 if [ "$AUTH_OK" -eq 0 ]; then
   if [ "$SKIP_PAGE" -eq 1 ]; then
-    warn "Claude Code is not logged in. Run 'claude' once and sign in before the first recording."
+    warn "Claude Code is not signed in. Do the sign-in step of SETUP.md (step 2) before the first recording."
   else
-    die "Claude Code is not logged in. Ask the user to run 'claude' in Terminal and sign in, then run this script again."
+    die "Claude Code is not signed in. Do the sign-in step of SETUP.md (step 2): run '$CLAUDE auth login' (the user clicks Authorize in the browser), or have the user type 'claude' in Terminal and sign in. Then run this script again."
   fi
 fi
 CODEX="$(command -v codex 2>/dev/null || true)"
 
-CONFIG_DIR="$HOME/Library/Application Support/meeting-notes"
-CONFIG="$CONFIG_DIR/config.toml"
-WHISPER_BIN_DIR="$CONFIG_DIR/bin"
-WHISPER_BIN="$WHISPER_BIN_DIR/whisper-cli"
-BIN_DIR="$HOME/.local/bin"
-MN="$BIN_DIR/mn"
 mkdir -p "$CONFIG_DIR" "$WHISPER_BIN_DIR" "$BIN_DIR"
 
 OLD_NOTES_LINE=""
@@ -310,10 +380,11 @@ if [ -f "$CONFIG" ]; then
   OLD_NAME_LINE="$(grep -m1 -E '^my_name[[:space:]]*=' "$CONFIG" || true)"
 fi
 if [ -z "$NAME" ] && [ -z "$OLD_NAME_LINE" ]; then
+  if [ "$UPDATE" -eq 1 ]; then
+    die "The existing config at $CONFIG has no name, so this cannot be an update. Do a normal install instead: follow SETUP.md from step 0 and run this script with --name \"Full Name\"."
+  fi
   die "The person's full name is missing. Ask the user for their full name and run this script again with --name \"Full Name\"."
 fi
-
-WORK_DIR="$(mktemp -d)"
 
 # ---------------------------------------------------------------- 2. app
 step "Installing the Meeting Notes app (about 1 minute)"
@@ -347,6 +418,9 @@ hdiutil detach "$MOUNT_DIR" -quiet >/dev/null 2>&1 || hdiutil detach "$MOUNT_DIR
 MOUNT_DIR=""
 # The app is unsigned: remove the quarantine flag so Gatekeeper does not block it.
 xattr -dr com.apple.quarantine "$APP" >/dev/null 2>&1 || true
+if ! add_to_dock "$APP"; then
+  warn "Could not add Meeting Notes to the Dock. The user can open it from Spotlight (Command+Space, type Meeting Notes)."
+fi
 
 # ---------------------------------------------------------------- 3. mn
 step "Installing the command-line tool (mn)"
@@ -497,7 +571,7 @@ else
 fi
 
 if [ -n "$PAGE_URL" ]; then PAGE_JSON="\"$(json_str "$PAGE_URL")\""; else PAGE_JSON="null"; fi
-printf 'SETUP_RESULT {"ok":true,"os":"macos","config":"%s","artifact_url_file":"%s","mn":"%s","app":"%s","whisper_cli":"%s","whisper_model":"%s","notes_dir":"%s","claude_cli":"%s","page_url":%s,"launched":%s,"warnings":[%s]}\n' \
+printf 'SETUP_RESULT {"ok":true,"os":"macos","config":"%s","artifact_url_file":"%s","mn":"%s","app":"%s","whisper_cli":"%s","whisper_model":"%s","notes_dir":"%s","claude_cli":"%s","page_url":%s,"launched":%s,"update":%s,"release":"%s","warnings":[%s]}\n' \
   "$(json_str "$CONFIG")" "$(json_str "$URL_FILE")" "$(json_str "$MN")" "$(json_str "$APP")" \
   "$(json_str "$WHISPER")" "$(json_str "$WMODEL")" "$(json_str "$NOTES_DIR")" "$(json_str "$CLAUDE")" \
-  "$PAGE_JSON" "$LAUNCHED" "$WARN_JSON"
+  "$PAGE_JSON" "$LAUNCHED" "$(bool_json "$UPDATE")" "$(json_str "$RELEASE_LABEL")" "$WARN_JSON"
