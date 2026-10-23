@@ -17,6 +17,7 @@ The pilot PM (Mac) uses it on 5 real meetings in 1 week. Each card is correct (r
   - [x] auto-stop removed; plain widget (Start/levels/Stop/spinner/Done) — user confirmed it works
   - [x] notch pill at top edge, hover unfold, drag + remembered position, Ctrl+Alt+M show/hide, Ctrl+Alt+R record toggle, start at login (tray toggle). Folded look checked by screenshot; unfold/drag/hotkeys need the user's check
   - [ ] 9:00 notification
+  - [x] fixed size (min = max; `resizable: false` makes GTK ignore set_size and keep 200x200). Linux starts on a non-primary monitor when there is one, because Linux cannot hide the widget from screen sharing (Mac and Windows can, tested). Checked on Mustafa's 2 monitors via KWin: resizeable=false, HDMI-A-1, 44x170
   - [x] "Still recording" system notification at 30 min, then every 30 min (never auto-stops). `MN_REMIND_SECS` shortens it for tests. Unit-tested; live check pending on Linux, Windows, Mac
 - [ ] 5. Mac + Windows (decided 2026-10-22: both now; Mustafa tests on his brother's MacBook and his own Windows PC; PM test is 2026-10-23)
   - [x] A: `mn capture mic|system` via cpal (Windows loopback + mic, Mac mic), per-OS capture defaults, CREATE_NO_WINDOW, claude.cmd resolution

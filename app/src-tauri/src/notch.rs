@@ -140,9 +140,20 @@ pub fn drop_anchor(x: i32, y: i32, monitors: &[Rect], primary: Rect) -> Anchor {
     }
 }
 
-/// The saved spot if some monitor still contains it, else the right edge of the primary monitor,
-/// vertically centred.
-pub fn resolve(saved: Option<SavedPos>, monitors: &[Rect], primary: Rect) -> Anchor {
+/// Where the tab goes when nothing is saved. Linux cannot hide the widget from screen sharing, so
+/// there it starts on a monitor other than the primary one (the one usually shared), if any.
+pub fn home_monitor(monitors: &[Rect], primary: Rect, avoid_primary: bool) -> Rect {
+    if avoid_primary {
+        if let Some(other) = monitors.iter().find(|m| **m != primary) {
+            return *other;
+        }
+    }
+    primary
+}
+
+/// The saved spot if some monitor still contains it, else the right edge of `home`, vertically
+/// centred.
+pub fn resolve(saved: Option<SavedPos>, monitors: &[Rect], home: Rect) -> Anchor {
     if let Some(s) = saved {
         if let Some(monitor) = monitor_at(s.x, s.y, monitors) {
             return Anchor {
@@ -154,8 +165,8 @@ pub fn resolve(saved: Option<SavedPos>, monitors: &[Rect], primary: Rect) -> Anc
     }
     Anchor {
         edge: Edge::Right,
-        monitor: primary,
-        center_y: primary.y + primary.height / 2,
+        monitor: home,
+        center_y: home.y + home.height / 2,
     }
 }
 
@@ -288,6 +299,14 @@ mod tests {
         assert_eq!((a.edge, a.monitor, a.center_y), (Edge::Left, RIGHT, 300));
         let a = drop_anchor(1915, 300, &[LEFT, RIGHT], LEFT);
         assert_eq!((a.edge, a.monitor), (Edge::Right, LEFT));
+    }
+
+    #[test]
+    fn home_avoids_the_primary_monitor_only_when_asked_and_possible() {
+        assert_eq!(home_monitor(&[LEFT, RIGHT], LEFT, true), RIGHT);
+        assert_eq!(home_monitor(&[LEFT, RIGHT], RIGHT, true), LEFT);
+        assert_eq!(home_monitor(&[LEFT, RIGHT], LEFT, false), LEFT);
+        assert_eq!(home_monitor(&[LEFT], LEFT, true), LEFT);
     }
 
     #[test]

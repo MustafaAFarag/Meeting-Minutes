@@ -337,14 +337,24 @@ fn ensure_placed(window: &Window) {
     report(window, "settled ");
 }
 
+/// Sets the size and pins it (minimum = maximum), so the user cannot resize the widget by its
+/// edges. `resizable: false` cannot be used instead: GTK then ignores `set_size` and keeps the
+/// window at its default 200x200.
+fn lock_size(window: &Window, size: LogicalSize<f64>) -> tauri::Result<()> {
+    window.set_min_size(None::<LogicalSize<f64>>)?;
+    window.set_max_size(None::<LogicalSize<f64>>)?;
+    window.set_size(size)?;
+    window.set_min_size(Some(size))?;
+    window.set_max_size(Some(size))
+}
+
 /// Resizes between the folded tab and the unfolded column, keeping the same edge and the same
 /// vertical centre.
 #[tauri::command]
 fn set_size(window: Window, state: State<'_, NotchState>, folded: bool) -> Result<(), String> {
     let (width, height) = notch::size_for(folded);
     state.folded.store(folded, Ordering::SeqCst);
-    window
-        .set_size(LogicalSize::new(width, height))
+    lock_size(&window, LogicalSize::new(width, height))
         .map_err(|e| format!("Could not resize the window: {e}"))?;
     if !state.dragging.load(Ordering::SeqCst) && !state.user_hidden.load(Ordering::SeqCst) {
         place(&window, &state);
@@ -400,7 +410,8 @@ fn init_position(window: &Window, state: &NotchState) {
         return;
     };
     let saved = state.prefs.lock().ok().and_then(|p| p.pos);
-    state.set_anchor(notch::resolve(saved, &rects, primary));
+    let home = notch::home_monitor(&rects, primary, cfg!(target_os = "linux"));
+    state.set_anchor(notch::resolve(saved, &rects, home));
     place(window, state);
 }
 
