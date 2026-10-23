@@ -1,6 +1,6 @@
 [package]
 name = "meeting-notes-app"
-version = "0.1.5"
+version = "0.1.6"
 description = "Meeting Notes desktop widget"
 edition = "2021"
 

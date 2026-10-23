@@ -3,7 +3,7 @@
 Newest first. "What's new for you" is read by Claude to tell project managers what changed after an update, so keep it plain.
 "Technical" is for developers. `scripts/release.sh` needs a `## vX.Y.Z` heading here before it makes a release, and replaces `unreleased` with the date.
 
-## v0.1.6 - unreleased
+## v0.1.6 - 2026-10-24
 
 ### What's new for you
 - **Ask MM:** on your My Meetings page you can now ask a question about your meetings and get an answer in a small popup, with Storbi.
