@@ -32,7 +32,8 @@ pub struct Config {
     pub language: String,
     /// whisper `-t`.
     pub threads: usize,
-    /// Silero VAD model for whisper's `--vad`. Off by default: it dropped real speech in testing.
+    /// Silero VAD model for whisper's `--vad` (the setup scripts download it). Unset means no VAD:
+    /// whisper then also transcribes the silences, where it can invent lines.
     pub vad_model: Option<PathBuf>,
     /// argv of a command that writes raw s16le 16 kHz mono PCM to stdout (the mic).
     /// `None` means the per-OS default: Linux computes it from `pactl get-default-source`;

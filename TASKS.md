@@ -39,6 +39,8 @@ The pilot PM (Mac) uses it on 5 real meetings in 1 week. Each card is correct (r
   - [ ] later: linux.sh adds that KWin rule when the desktop is KDE; check virtual desktops on Windows and Mac (Spaces) in the tests
   - [ ] later: quote the Linux Exec= path after enable() so dev paths with spaces work
 - [ ] 7. Install on pilot Mac, run the pilot week
+- [x] Transcription fix (v0.1.5): a 2026-10-23 Arabic meeting had 367 of 390 "Me" lines as two invented Arabic phrases, and the track took 10.5 min. Reproduced with a test track (45 s of noise, then Arabic): whisper picked Welsh and looped for the whole file. Fix: Silero VAD on by default (setup downloads ggml-silero-v5.1.2.bin, about 1 MB) with -vt 0.35 -vp 200 -vsd 500; -sns; -mc 0 when no vocab prompt; drop a 3+ word line after it appeared twice on a track; move the start of a >30 s segment to just before its end (VAD timestamp slip). Checked with the shipped b5130 Linux build: Arabic detected (p 0.9995), English after 40 s of noise detected, a 20 dB quieter speaker kept, 6x faster
+  - [ ] later: languages mixed inside one track are still transcribed in the track's first language (whisper detects once per file)
 - [ ] 8. Branding by account (after the Windows + Mac tests pass)
   - Claude account email ends with `@ctchealth.ch`: keep the ctcHealth logo, colours, and "CTC Health" in the prompts and the minutes .docx
   - Any other account: a generic look picked from https://styles.refero.design/ and no CTC name in prompts or .docx
@@ -53,7 +55,7 @@ The pilot PM (Mac) uses it on 5 real meetings in 1 week. Each card is correct (r
 - Headless artifact publishing needs `CLAUDE_CODE_ARTIFACT=1`. This env var is undocumented, so re-check it after Claude Code updates.
 - M365 connector: works in `claude -p` on the CTCHealth account (`CLAUDE_CONFIG_DIR=~/.claude-company` on Arch). It shows needs-auth on the personal account.
 - Two tracks, Me and Them. No speaker diarization in v1.
-- Whisper: VAD stays off by default because it dropped real speech in the test. Threads are set to all cores; that runs about 5.5× real time on this CPU.
+- Whisper: VAD is on by default since v0.1.5 (it was off after it dropped speech in an early test; a lower threshold, 0.35, and 200 ms padding keep quiet speech). Threads are set to all cores; that runs about 5.5× real time on this CPU.
 - Card generation: `claude -p --json-schema` / `codex exec --output-schema`. Both take about 40 s. Claude+M365 matched the calendar event and found real links.
 - The repo is public: never commit real cards or transcripts. Keep them in `.local-samples/` (git-ignored).
 

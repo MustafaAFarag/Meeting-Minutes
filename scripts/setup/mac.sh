@@ -11,6 +11,7 @@ set -euo pipefail
 
 DEFAULT_BASE="https://github.com/MustafaAFarag/Meeting-Minutes/releases/latest/download"
 MODEL_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
+VAD_URL="https://huggingface.co/ggml-org/whisper-vad/resolve/main"
 TOTAL=8
 
 NAME=""
@@ -417,6 +418,16 @@ else
   fi
 fi
 
+# Silero VAD (about 1 MB): whisper then skips silence, so it cannot invent lines there, and
+# "auto" picks the language from the first speech instead of from a silent start.
+VAD_FILE="ggml-silero-v5.1.2.bin"; VAD_SIZE=885098
+mkdir -p "$CONFIG_DIR/models"
+VMODEL="$CONFIG_DIR/models/$VAD_FILE"
+if [ ! -f "$VMODEL" ] || [ "$(file_size "$VMODEL")" != "$VAD_SIZE" ]; then
+  download "$VAD_URL/$VAD_FILE" "$VMODEL"
+  [ "$(file_size "$VMODEL")" = "$VAD_SIZE" ] || die "The VAD model download is incomplete. Run this script again."
+fi
+
 # ---------------------------------------------------------------- 6. config
 step "Writing the config"
 if [ -n "$OLD_NOTES_LINE" ]; then
@@ -435,6 +446,7 @@ if [ -f "$CONFIG" ]; then cp -f "$CONFIG" "$CONFIG.bak"; fi
   echo "$NOTES_LINE"
   echo "whisper_cli = $(toml_str "$WHISPER")"
   echo "whisper_model = $(toml_str "$WMODEL")"
+  echo "vad_model = $(toml_str "$VMODEL")"
   echo "claude_cli = $(toml_str "$CLAUDE")"
   if [ -n "$CODEX" ]; then echo "codex_cli = $(toml_str "$CODEX")"; fi
   if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then echo "claude_config_dir = $(toml_str "$CLAUDE_CONFIG_DIR")"; fi

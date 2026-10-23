@@ -158,6 +158,7 @@ $ProgressPreference = 'SilentlyContinue'
 
 $WhisperUrl = 'https://github.com/ggml-org/whisper.cpp/releases/download/b5130/whisper-bin-x64.zip'
 $ModelUrl = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main'
+$VadUrl = 'https://huggingface.co/ggml-org/whisper-vad/resolve/main'
 $Total = 8
 $script:StepNumber = 0
 $script:Warnings = New-Object System.Collections.ArrayList
@@ -435,6 +436,20 @@ try {
         }
     }
 
+    # Silero VAD (about 1 MB): whisper then skips silence, so it cannot invent lines there, and
+    # "auto" picks the language from the first speech instead of from a silent start.
+    $vadFile = 'ggml-silero-v5.1.2.bin'
+    $vadSize = 885098
+    $vadDir = Join-Path $DataDir 'models'
+    New-Item -ItemType Directory -Force -Path $vadDir | Out-Null
+    $VadPath = Join-Path $vadDir $vadFile
+    if (-not ((Test-Path -LiteralPath $VadPath) -and ((Get-Item -LiteralPath $VadPath).Length -eq $vadSize))) {
+        Get-Download ($VadUrl + '/' + $vadFile) $VadPath
+        if ((Get-Item -LiteralPath $VadPath).Length -ne $vadSize) {
+            Fail 'The VAD model download is incomplete. Run this script again.'
+        }
+    }
+
     # ------------------------------------------------------------ 6. config
     Write-Step 'Writing the config'
     if ($OldNotesLine) {
@@ -452,6 +467,7 @@ try {
     [void]$lines.Add($notesLine)
     [void]$lines.Add('whisper_cli = ' + (ConvertTo-TomlPath $Whisper))
     [void]$lines.Add('whisper_model = ' + (ConvertTo-TomlPath $ModelPath))
+    [void]$lines.Add('vad_model = ' + (ConvertTo-TomlPath $VadPath))
     [void]$lines.Add('claude_cli = ' + (ConvertTo-TomlPath $Claude))
     if ($Codex) { [void]$lines.Add('codex_cli = ' + (ConvertTo-TomlPath $Codex)) }
     if ($env:CLAUDE_CONFIG_DIR) { [void]$lines.Add('claude_config_dir = ' + (ConvertTo-TomlPath $env:CLAUDE_CONFIG_DIR)) }

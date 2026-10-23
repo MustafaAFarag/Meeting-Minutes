@@ -208,6 +208,9 @@ fn passes_threads_language_and_leaves_vad_off_by_default() {
     let call = &fx.calls()[0];
     assert!(call.contains("-t 10"), "{call}");
     assert!(call.contains("-l auto -oj"), "{call}");
+    assert!(call.contains("-sns"), "{call}");
+    // The fixture sets a vocab prompt, and `-mc 0` would make whisper drop it.
+    assert!(!call.contains("-mc 0"), "{call}");
     assert!(!call.contains("--vad"), "{call}");
     assert!(!call.contains("-vm"), "{call}");
 }
@@ -225,7 +228,10 @@ fn passes_configured_language_and_vad_model() {
     let call = &fx.calls()[0];
     assert!(call.contains("-l ar -oj"), "{call}");
     assert!(call.contains("-t 3"), "{call}");
-    assert!(call.contains("--vad -vm /models/silero-vad.bin"), "{call}");
+    assert!(
+        call.contains("--vad -vm /models/silero-vad.bin -vt 0.35 -vp 200 -vsd 500"),
+        "{call}"
+    );
 }
 
 #[test]
@@ -277,7 +283,9 @@ fn omits_prompt_when_not_configured() {
     let mut cfg = fx.config(&fx.copying_whisper());
     cfg.vocab_prompt = None;
     run(&fx, &cfg).0.unwrap();
-    assert!(!fx.calls()[0].contains("--prompt"));
+    let call = &fx.calls()[0];
+    assert!(!call.contains("--prompt"), "{call}");
+    assert!(call.contains("-mc 0"), "{call}");
 }
 
 #[test]

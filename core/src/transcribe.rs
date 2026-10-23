@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -36,6 +36,23 @@ const VARIETY_LEN_CAP: usize = 100;
 
 /// Same speaker, gap at most this long: one line.
 const JOIN_GAP_MS: u64 = 2_000;
+
+/// A line of at least this many words that whisper already wrote this many times on the same
+/// track is a loop on silence ("اشتركوا في القناة" 20 times in a row), not speech.
+const REPEAT_MIN_WORDS: usize = 3;
+const REPEAT_KEEP: usize = 2;
+
+/// Whisper segments are at most 30 s. With VAD a segment that starts at the end of one speech
+/// stretch can get that start time while it really belongs to the next stretch, minutes later.
+const MAX_SEGMENT_MS: u64 = 30_000;
+/// For such a segment the start is moved to `end - length`, the length estimated per character.
+const MS_PER_CHAR: u64 = 80;
+const MIN_ESTIMATE_MS: u64 = 1_000;
+
+/// VAD settings, tested on Arabic speech with long silent gaps, the same speech 20 dB quieter,
+/// and English after 40 s of noise: nothing dropped, nothing invented. A lower threshold than
+/// whisper's 0.5 keeps quiet speakers; the padding keeps the first and last syllables.
+const VAD_ARGS: [&str; 6] = ["-vt", "0.35", "-vp", "200", "-vsd", "500"];
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Segment {
@@ -95,6 +112,40 @@ pub fn is_garbage(text: &str) -> bool {
     let low_variety = chars.len() > VARIETY_CHECK_MIN_LEN
         && distinct * 100 < VARIETY_PERCENT * chars.len().min(VARIETY_LEN_CAP);
     repeated || low_variety
+}
+
+/// Drops a line once the same text (of at least `REPEAT_MIN_WORDS` words) was kept
+/// `REPEAT_KEEP` times on this track. Short replies such as "yes, okay" may repeat freely.
+pub fn drop_repeats(segments: Vec<Segment>) -> Vec<Segment> {
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    segments
+        .into_iter()
+        .filter(|s| {
+            let key: String = s
+                .text
+                .to_lowercase()
+                .chars()
+                .filter(|c| c.is_alphanumeric() || c.is_whitespace())
+                .collect();
+            let key = key.split_whitespace().collect::<Vec<_>>().join(" ");
+            if key.split(' ').count() < REPEAT_MIN_WORDS {
+                return true;
+            }
+            let count = seen.entry(key).or_insert(0);
+            *count += 1;
+            *count <= REPEAT_KEEP
+        })
+        .collect()
+}
+
+/// Moves the start of an impossibly long segment to just before its end (see `MAX_SEGMENT_MS`).
+pub fn fix_long_span(mut seg: Segment) -> Segment {
+    if seg.end_ms.saturating_sub(seg.start_ms) > MAX_SEGMENT_MS {
+        let estimate =
+            (seg.text.chars().count() as u64 * MS_PER_CHAR).clamp(MIN_ESTIMATE_MS, MAX_SEGMENT_MS);
+        seg.start_ms = seg.end_ms.saturating_sub(estimate);
+    }
+    seg
 }
 
 /// One timeline sorted by start time; neighbours from the same speaker close together become one line.
@@ -235,13 +286,21 @@ fn run_whisper(
         .arg(session_dir.join(track.name()))
         .arg("-np")
         .arg("-t")
-        .arg(cfg.threads.max(1).to_string());
+        .arg(cfg.threads.max(1).to_string())
+        // No non-speech tokens: one of the ways whisper invents lines on silence.
+        .arg("-sns");
+    // With VAD whisper only hears speech: silence cannot invent lines, and "auto" picks the
+    // language from the first speech instead of from a silent start.
     if let Some(vad_model) = &cfg.vad_model {
-        cmd.args(["--vad", "-vm"]).arg(vad_model);
+        cmd.args(["--vad", "-vm"]).arg(vad_model).args(VAD_ARGS);
     }
-    if let Some(prompt) = &cfg.vocab_prompt {
-        cmd.arg("--prompt").arg(prompt);
-    }
+    // No text carried from one 30 s window to the next stops the loops where whisper repeats one
+    // invented line for minutes. whisper then drops --prompt as well, so a vocab prompt keeps
+    // the context and relies on VAD to keep the silences out.
+    match &cfg.vocab_prompt {
+        Some(prompt) => cmd.arg("--prompt").arg(prompt),
+        None => cmd.args(["-mc", "0"]),
+    };
     // output() captures stdout too, so whisper cannot mix into our JSON status lines
     let out = cmd
         .output()
@@ -263,7 +322,9 @@ fn run_whisper(
     let mut segments =
         parse_whisper_json(&json, track).with_context(|| format!("parsing {}", path.display()))?;
     segments.retain(|s| !is_hallucination(&s.text) && !is_garbage(&s.text));
-    Ok(segments)
+    Ok(drop_repeats(
+        segments.into_iter().map(fix_long_span).collect(),
+    ))
 }
 
 fn remove(path: &Path) -> Result<()> {

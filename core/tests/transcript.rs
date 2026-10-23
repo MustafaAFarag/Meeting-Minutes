@@ -133,3 +133,49 @@ fn formats_header_and_speaker_lines() {
         "# Transcript 2026-10-22 10:49–11:32\n\n[00:00:00] **Me:** Hi everyone\n[01:02:03] **Them:** Bye\n"
     );
 }
+
+#[test]
+fn a_long_line_repeated_on_silence_is_kept_twice() {
+    let loop_line = "اشتركوا في القناة يا جماعة";
+    let segments: Vec<Segment> = (0..20)
+        .map(|i| seg(i * 1000, i * 1000 + 900, Track::Me, loop_line))
+        .chain([seg(30_000, 31_000, Track::Me, "We ship on Thursday then.")])
+        .collect();
+    let kept = drop_repeats(segments);
+    assert_eq!(kept.len(), 3);
+    assert_eq!(kept[2].text, "We ship on Thursday then.");
+}
+
+#[test]
+fn repeats_ignore_case_and_punctuation_but_short_replies_stay() {
+    let segments = vec![
+        seg(0, 1, Track::Them, "Thank you very much."),
+        seg(2, 3, Track::Them, "thank you very much"),
+        seg(4, 5, Track::Them, "Thank you, very much!"),
+        seg(6, 7, Track::Them, "Okay."),
+        seg(8, 9, Track::Them, "Okay."),
+        seg(10, 11, Track::Them, "Okay."),
+    ];
+    let kept: Vec<String> = drop_repeats(segments).into_iter().map(|s| s.text).collect();
+    assert_eq!(
+        kept,
+        [
+            "Thank you very much.",
+            "thank you very much",
+            "Okay.",
+            "Okay.",
+            "Okay."
+        ]
+    );
+}
+
+#[test]
+fn a_segment_spanning_a_vad_gap_starts_just_before_its_end() {
+    // Seen with VAD: a short line given the end of the previous speech stretch as its start.
+    let fixed = fix_long_span(seg(66_540, 160_460, Track::Me, "تمام بالنسبة للديدلين"));
+    assert_eq!(fixed.end_ms, 160_460);
+    assert_eq!(fixed.start_ms, 160_460 - 21 * 80);
+
+    let normal = seg(1_000, 9_000, Track::Me, "A normal eight second line.");
+    assert_eq!(fix_long_span(normal.clone()), normal);
+}
