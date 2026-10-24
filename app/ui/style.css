@@ -61,6 +61,7 @@ html, body {
 #app[data-view="idle"] [data-view="idle"],
 #app[data-view="recording"] [data-view="recording"],
 #app[data-view="working"] [data-view="working"],
+#app[data-view="updating"] [data-view="working"],
 #app[data-view="done"] [data-view="done"],
 #app[data-view="error"] [data-view="error"] { display: block; }
 #app[data-view="recording"] .item.rec { display: flex; }
@@ -152,16 +153,26 @@ html, body {
 .badge[data-state="error"] .bang { display: block; font-size: 9px; }
 .badge .count { color: var(--orange); font-variant-numeric: tabular-nums; }
 
-/* Newer release. Hidden until the app emits mn-update. The column is 44px wide, so a long
-   confirmation ellipsizes; the full sentence is the tooltip. */
+/* Newer release. Hidden until the app emits mn-update. Two short lines ("Update" / "v0.1.8").
+   A long confirmation ellipsizes; the full sentence is the tooltip. */
+.update-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  flex: none;
+  width: 40px;
+}
+.update-box[hidden] { display: none; }
 .update {
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
   flex: none;
-  width: 36px;
-  height: 18px;
-  padding: 0 2px;
+  width: 40px;
+  min-height: 24px;
+  padding: 2px 1px;
   border: 1px solid rgba(217, 119, 87, 0.75);
   border-radius: 5px;
   background: transparent;
@@ -169,15 +180,33 @@ html, body {
   font: inherit;
   font-size: 8px;
   font-weight: 700;
-  line-height: 1;
+  line-height: 1.15;
+  text-align: center;
   cursor: pointer;
+}
+.update[hidden],
+.update .kicker[hidden],
+.update .detail[hidden] { display: none; }
+.update .kicker, .update .detail { display: block; max-width: 100%; }
+.update.failed {
+  color: var(--red);
+  border-color: rgba(229, 72, 77, 0.85);
+}
+.update.note {
+  flex-direction: row;
+  height: 18px;
+  min-height: 18px;
+}
+.update.note .kicker {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.update[hidden] { display: none; }
-.update:hover { background: rgba(217, 119, 87, 0.16); }
+.update.help { min-height: 14px; height: 14px; padding: 0 1px; }
+.update:hover:not(:disabled) { background: rgba(217, 119, 87, 0.16); }
+.update.failed:hover:not(:disabled) { background: rgba(229, 72, 77, 0.16); }
 .update:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
+.update:disabled { opacity: 0.45; cursor: default; }
 
 @keyframes fade { from { opacity: 0; } }
 @keyframes pulse { 50% { opacity: 0.25; transform: scale(0.8); } }

@@ -2474,6 +2474,7 @@ dependencies = [
  "gtk",
  "meeting-notes-core",
  "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-autostart",

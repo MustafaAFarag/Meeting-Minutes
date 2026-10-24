@@ -8,8 +8,7 @@ const DRAG_PX = 4;
 const NOTICE_MS = 6000;
 const DETAIL_CHARS = 120;
 const MIN_DB = -60;
-const COPIED_MS = 2500;
-const COPIED_TEXT = "Copied - paste it into Claude";
+const UPDATE_NOTE_MS = 4000;
 
 const $ = (id) => document.getElementById(id);
 const app = $("app");
@@ -19,8 +18,10 @@ const TITLE_OPEN_MEETINGS = "Open My Meetings";
 
 let doneTimer = null;
 let noticeTimer = null;
-let copiedTimer = null;
-let updatePrompt = "";
+let updateNoteTimer = null;
+let offerVersion = "";
+let updateBusy = false;
+let failedMode = false;
 // After Stop is clicked, late "recording" events must not flip the view back.
 let stopping = false;
 let statusDetail = "";
@@ -34,18 +35,22 @@ const STATUS_TITLE = {
   idle: () => "Ready",
   recording: () => "Recording",
   working: () => statusDetail,
+  updating: () => statusDetail,
   done: () => "Your notes are ready",
   error: () => statusDetail,
 };
 
 function updateButtons(name) {
-  const canStart = name === "idle" || name === "done" || name === "error";
+  const canStart = !updateBusy && (name === "idle" || name === "done" || name === "error");
   $("start").disabled = !canStart;
   $("stop").disabled = name !== "recording";
   $("retry").hidden = name !== "error" && !queueError;
+  const update = $("update");
+  if (!failedMode && !update.classList.contains("note")) update.disabled = updateBusy;
 }
 
 function setView(name) {
+  if (updateBusy && name !== "updating") return;
   app.dataset.view = name;
   statusEl.title = STATUS_TITLE[name]();
   updateButtons(name);
@@ -208,48 +213,164 @@ $("retry").addEventListener("click", () => {
 
 $("open-meetings").addEventListener("click", () => run("open_meetings", showNotice));
 
-// The open column is 44px wide, so the button shows "Update" and, after a copy, as much of
-// "Copied - paste it into Claude" as fits. The tooltip is the full sentence. The tray item
-// is the path that shows the sentence in a notification. Folded (12px) hides this button.
-function showUpdate(payload) {
-  const prompt = payload && payload.prompt ? String(payload.prompt) : "";
-  if (!prompt) return;
-  updatePrompt = prompt;
+// The open column is 44px wide. The button is two short lines ("Update" / "v0.1.8"). A longer
+// sentence ellipsizes and the tooltip is the full text. Folded (12px) hides this button.
+function showOffer() {
+  if (!offerVersion) return;
+  clearTimeout(updateNoteTimer);
+  failedMode = false;
+  updateBusy = false;
   const btn = $("update");
+  $("update-box").hidden = false;
   btn.hidden = false;
-  btn.textContent = "Update";
-  const version = payload.version ? " (" + payload.version + ")" : "";
-  btn.title = "Update available" + version;
-  btn.setAttribute("aria-label", "Update");
+  btn.disabled = false;
+  btn.classList.remove("failed", "note");
+  $("update-kicker").textContent = "Update";
+  $("update-detail").hidden = false;
+  $("update-detail").textContent = offerVersion;
+  $("update-help").hidden = true;
+  const label = "Update to " + offerVersion;
+  btn.title = label;
+  btn.setAttribute("aria-label", label);
+  if (app.dataset.view === "updating") setView("idle");
+  updateButtons(app.dataset.view);
 }
 
-async function copyUpdate() {
-  if (!updatePrompt) return;
+function showUpdating(message) {
+  clearTimeout(updateNoteTimer);
+  failedMode = false;
+  updateBusy = true;
   const btn = $("update");
-  try {
-    await navigator.clipboard.writeText(updatePrompt);
-  } catch (err) {
-    console.error(err);
-    try {
-      await invoke("copy_update_prompt", { text: updatePrompt });
-    } catch (err2) {
-      console.error(err2);
-      return;
-    }
+  $("update-box").hidden = false;
+  btn.hidden = false;
+  btn.disabled = true;
+  btn.classList.remove("failed", "note");
+  $("update-kicker").textContent = "Updating";
+  const detail = $("update-detail");
+  detail.hidden = true;
+  $("update-help").hidden = true;
+  btn.title = message || "Updating... Meeting Notes will restart";
+  btn.setAttribute("aria-label", btn.title);
+  statusDetail = btn.title;
+  setView("updating");
+}
+
+function showFailed(message) {
+  clearTimeout(updateNoteTimer);
+  updateBusy = false;
+  failedMode = true;
+  const btn = $("update");
+  $("update-box").hidden = false;
+  btn.hidden = false;
+  btn.disabled = false;
+  btn.classList.add("failed");
+  btn.classList.remove("note");
+  $("update-kicker").textContent = "Update";
+  $("update-detail").hidden = false;
+  $("update-detail").textContent = "failed";
+  $("update-help").hidden = false;
+  btn.title = message || "Update failed";
+  btn.setAttribute("aria-label", "Update failed");
+  if (app.dataset.view === "updating") setView("idle");
+  updateButtons(app.dataset.view);
+}
+
+function hideUpdate() {
+  clearTimeout(updateNoteTimer);
+  $("update-box").hidden = true;
+  $("update-help").hidden = true;
+  failedMode = false;
+  updateBusy = false;
+  offerVersion = "";
+  if (app.dataset.view === "updating") setView("idle");
+  updateButtons(app.dataset.view);
+}
+
+// `after` runs once the short confirmation has been on screen for a few seconds.
+function showUpdateNote(message, after) {
+  updateBusy = false;
+  failedMode = false;
+  const btn = $("update");
+  $("update-box").hidden = false;
+  btn.hidden = false;
+  btn.disabled = true;
+  btn.classList.remove("failed");
+  btn.classList.add("note");
+  $("update-kicker").textContent = message;
+  $("update-detail").hidden = true;
+  $("update-help").hidden = true;
+  btn.title = message;
+  btn.setAttribute("aria-label", message);
+  if (app.dataset.view === "updating") setView("idle");
+  updateButtons(app.dataset.view);
+  clearTimeout(updateNoteTimer);
+  updateNoteTimer = setTimeout(() => {
+    btn.classList.remove("note");
+    after();
+  }, UPDATE_NOTE_MS);
+}
+
+function applyUpdate(payload) {
+  if (!payload || !payload.phase) return;
+  if (payload.version) offerVersion = String(payload.version);
+  const message = payload.message ? String(payload.message) : "";
+  switch (payload.phase) {
+    case "offer":
+      if (failedMode || updateBusy) return;
+      showOffer();
+      break;
+    case "updating":
+      showUpdating(message);
+      break;
+    case "up_to_date":
+      showUpdateNote(message, hideUpdate);
+      break;
+    case "failed":
+      showFailed(message);
+      break;
+    case "refused":
+      showUpdateNote(message, () => {
+        if (offerVersion) showOffer();
+        else hideUpdate();
+      });
+      break;
+    case "copied":
+      showUpdateNote(message, () => {
+        if (offerVersion) showOffer();
+        else hideUpdate();
+      });
+      break;
+    case "quiet":
+      updateBusy = false;
+      if (!offerVersion) hideUpdate();
+      else showOffer();
+      break;
+    default:
+      break;
   }
-  btn.textContent = COPIED_TEXT;
-  btn.title = COPIED_TEXT;
-  btn.setAttribute("aria-label", COPIED_TEXT);
-  clearTimeout(copiedTimer);
-  copiedTimer = setTimeout(() => {
-    btn.textContent = "Update";
-    btn.title = "Update available";
-    btn.setAttribute("aria-label", "Update");
-  }, COPIED_MS);
+}
+
+function dismissFailure() {
+  invoke("dismiss_update_notice")
+    .then(() => {
+      failedMode = false;
+      if (offerVersion) showOffer();
+      else hideUpdate();
+    })
+    .catch((err) => console.error(err));
 }
 
 $("update").addEventListener("click", () => {
-  copyUpdate();
+  if (failedMode) {
+    dismissFailure();
+    return;
+  }
+  if (updateBusy || $("update").classList.contains("note")) return;
+  invoke("start_update").catch((err) => console.error(err));
+});
+
+$("update-help").addEventListener("click", () => {
+  invoke("copy_update_help").catch((err) => console.error(err));
 });
 
 // A press-and-move on the empty area drags the column along the edge (and drops it on the
@@ -283,7 +404,8 @@ function setEdge(edge) {
 listen("mn-status", (event) => onStatus(event.payload));
 listen("mn-queue", (event) => onQueue(event.payload));
 listen("mn-edge", (event) => setEdge(event.payload));
-listen("mn-update", (event) => showUpdate(event.payload));
+listen("mn-update", (event) => applyUpdate(event.payload));
+invoke("startup_update").then(applyUpdate).catch(console.error);
 invoke("current_edge").then(setEdge).catch(console.error);
 // Sessions queued before the window loaded (restart recovery).
 invoke("queue_status").then(onQueue).catch(console.error);

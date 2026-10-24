@@ -3,6 +3,7 @@ mod meetings;
 mod notch;
 mod queue;
 mod runner;
+mod self_update;
 mod update;
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -122,6 +123,9 @@ fn remind_still_recording(app: &AppHandle, minutes: u64) {
 /// being written for earlier meetings do not matter. When the recording stops, its session goes
 /// to the back of the notes queue and the slot is free at once.
 fn start_recording(app: &AppHandle, state: &Arc<RunState>) -> Result<(), String> {
+    if app.state::<UpdateOffer>().updating.load(Ordering::SeqCst) {
+        return Err(self_update::UPDATING.to_string());
+    }
     let guard = state.begin()?;
     let app = app.clone();
     let state = Arc::clone(state);
@@ -203,6 +207,9 @@ fn stop(state: Shared<'_>) -> Result<(), String> {
 /// failed, so this starts a fresh recording instead.
 #[tauri::command]
 fn retry(app: AppHandle, state: Shared<'_>) -> Result<(), String> {
+    if app.state::<UpdateOffer>().updating.load(Ordering::SeqCst) {
+        return Err(self_update::UPDATING.to_string());
+    }
     if state.queue.retry_failed() > 0 {
         emit_queue(&app, &state);
         return Ok(());
@@ -758,7 +765,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
             "show" => show_window(app),
             "hide" => hide_window(app),
             "autostart" => toggle_autostart(app, &login),
-            "update" => copy_update_from_tray(app),
+            "update" => begin_update(app, true),
             "quit" => {
                 let app = app.clone();
                 let state = Arc::clone(&*app.state::<Arc<RunState>>());
@@ -786,29 +793,79 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
 /// The release the tray and the widget are currently offering, if any.
 struct UpdateOffer {
     prompt: Mutex<String>,
+    version: Mutex<String>,
     menu: Mutex<Option<Menu<tauri::Wry>>>,
     item: Mutex<Option<MenuItem<tauri::Wry>>>,
+    /// An updater script is running. Start stays disabled until it finishes or the app restarts.
+    updating: AtomicBool,
+    /// One poll thread at a time.
+    polling: AtomicBool,
 }
 
 impl Default for UpdateOffer {
     fn default() -> Self {
         Self {
             prompt: Mutex::new(String::new()),
+            version: Mutex::new(String::new()),
             menu: Mutex::new(None),
             item: Mutex::new(None),
+            updating: AtomicBool::new(false),
+            polling: AtomicBool::new(false),
         }
     }
 }
 
 #[derive(Clone, serde::Serialize)]
 struct UpdatePayload {
+    phase: String,
     version: String,
     prompt: String,
+    message: String,
+}
+
+fn update_payload(phase: &str, version: &str, prompt: &str, message: &str) -> UpdatePayload {
+    UpdatePayload {
+        phase: phase.to_string(),
+        version: version.to_string(),
+        prompt: prompt.to_string(),
+        message: message.to_string(),
+    }
+}
+
+fn quiet_payload() -> UpdatePayload {
+    update_payload("quiet", "", "", "")
 }
 
 /// Same fallback as the core config helper: `.` when the home directory cannot be found.
 fn home_dir() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn repair_prompt() -> String {
+    update::update_prompt_for_home(&home_dir())
+}
+
+/// `<config dir>/meeting-notes/update-status.json`.
+fn update_status_path() -> Option<PathBuf> {
+    dirs::config_dir().map(|dir| self_update::status_file(&self_update::app_config_dir(&dir)))
+}
+
+fn emit_update(app: &AppHandle, payload: &UpdatePayload) {
+    if let Err(err) = app.emit(UPDATE_EVENT, payload) {
+        eprintln!("could not send the update to the window: {err}");
+    }
+}
+
+fn notify(app: &AppHandle, body: &str) {
+    let shown = app
+        .notification()
+        .builder()
+        .title("Meeting Notes")
+        .body(body)
+        .show();
+    if let Err(err) = shown {
+        eprintln!("could not show a notification: {err}");
+    }
 }
 
 /// Adds (or renames) the tray item and tells the widget. Errors are logged; the app keeps running.
@@ -817,7 +874,10 @@ fn announce_update(app: &AppHandle, version: &str, prompt: &str) {
     if let Ok(mut slot) = state.prompt.lock() {
         *slot = prompt.to_string();
     }
-    let label = format!("Update available ({version}): copy update prompt");
+    if let Ok(mut slot) = state.version.lock() {
+        *slot = version.to_string();
+    }
+    let label = self_update::tray_label(version);
     let menu = state.menu.lock().ok().and_then(|slot| slot.clone());
     match state.item.lock() {
         Ok(mut slot) => {
@@ -844,13 +904,13 @@ fn announce_update(app: &AppHandle, version: &str, prompt: &str) {
         Err(_) => eprintln!("update check: the tray state is locked"),
     }
     log(&format!("update available {version}"));
-    let payload = UpdatePayload {
-        version: version.to_string(),
-        prompt: prompt.to_string(),
-    };
-    if let Err(err) = app.emit(UPDATE_EVENT, &payload) {
-        eprintln!("could not send the update to the window: {err}");
+    if state.updating.load(Ordering::SeqCst) {
+        return;
     }
+    emit_update(
+        app,
+        &update_payload("offer", version, prompt, &self_update::tray_label(version)),
+    );
 }
 
 fn spawn_update_check(app: AppHandle) {
@@ -879,32 +939,305 @@ fn spawn_update_check(app: AppHandle) {
     }
 }
 
-/// Tray click: no webview gesture, so the clipboard plugin copies the prompt.
-fn copy_update_from_tray(app: &AppHandle) {
-    let prompt = app
-        .state::<UpdateOffer>()
+/// Button or tray: start the updater, or copy the repair sentence when the script is missing.
+fn begin_update(app: &AppHandle, from_tray: bool) {
+    let offer = app.state::<UpdateOffer>();
+    if offer.updating.load(Ordering::SeqCst) {
+        // The widget is already in the updating state. A tray click only needs a reminder.
+        if from_tray {
+            notify(app, self_update::UPDATING);
+        }
+        return;
+    }
+    let run = app.state::<Arc<RunState>>();
+    let snap = run.queue.snapshot();
+    let pending = self_update::notes_pending(snap.processing.is_some(), snap.waiting);
+    if let Some(message) = self_update::refusal(run.is_recording(), pending) {
+        tell_update(app, from_tray, "refused", message);
+        return;
+    }
+    let repo = self_update::repo_dir(&home_dir());
+    let host = self_update::host();
+    let script = self_update::updater_script(&repo, host);
+    if !script.is_file() {
+        log("update: no updater script, copying the repair sentence");
+        copy_repair(app, from_tray);
+        return;
+    }
+    let Some(status) = update_status_path() else {
+        eprintln!("update: no config directory, copying the repair sentence");
+        copy_repair(app, from_tray);
+        return;
+    };
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let work = self_update::fresh_work_dir(&std::env::temp_dir(), nonce);
+    let unix = self_update::detach_for_path(&std::env::var("PATH").unwrap_or_default());
+    let spec = match self_update::prepare_launch(&script, &repo, &status, &work, host, unix) {
+        Ok(spec) => spec,
+        Err(err) => {
+            eprintln!("update: {err}");
+            tell_update(
+                app,
+                from_tray,
+                "failed",
+                "Update failed. The updater could not be started.",
+            );
+            return;
+        }
+    };
+    if let Err(err) = spawn_detached(&spec) {
+        eprintln!("update: {err}");
+        tell_update(
+            app,
+            from_tray,
+            "failed",
+            "Update failed. The updater could not be started.",
+        );
+        return;
+    }
+    offer.updating.store(true, Ordering::SeqCst);
+    log(&format!("update: started {}", spec.program));
+    let prompt = stored_prompt(app);
+    emit_update(
+        app,
+        &update_payload("updating", "", &prompt, self_update::UPDATING),
+    );
+    if from_tray {
+        notify(app, self_update::UPDATING);
+    }
+    spawn_status_poll(app.clone(), status, false);
+}
+
+fn tell_update(app: &AppHandle, from_tray: bool, phase: &str, message: &str) {
+    let prompt = stored_prompt(app);
+    emit_update(app, &update_payload(phase, "", &prompt, message));
+    if from_tray {
+        notify(app, message);
+    }
+}
+
+fn stored_prompt(app: &AppHandle) -> String {
+    app.state::<UpdateOffer>()
         .prompt
         .lock()
         .ok()
         .filter(|text| !text.is_empty())
-        .map(|text| text.clone());
-    let Some(prompt) = prompt else {
-        eprintln!("no update prompt to copy");
-        return;
-    };
-    if let Err(err) = app.clipboard().write_text(prompt) {
+        .map(|text| text.clone())
+        .unwrap_or_else(repair_prompt)
+}
+
+/// Old or broken install: the script is not in the clone, so copy the repair sentence.
+fn copy_repair(app: &AppHandle, from_tray: bool) {
+    let prompt = repair_prompt();
+    if let Ok(mut slot) = app.state::<UpdateOffer>().prompt.lock() {
+        *slot = prompt.clone();
+    }
+    if let Err(err) = app.clipboard().write_text(&prompt) {
         eprintln!("could not copy the update prompt: {err}");
+        tell_update(app, from_tray, "failed", "Could not copy the update steps.");
         return;
     }
-    let shown = app
-        .notification()
-        .builder()
-        .title("Meeting Notes")
-        .body("Update prompt copied. Paste it into Claude.")
-        .show();
-    if let Err(err) = shown {
-        eprintln!("could not show the copy notification: {err}");
+    emit_update(
+        app,
+        &update_payload("copied", "", &prompt, self_update::COPY_FALLBACK),
+    );
+    if from_tray {
+        notify(app, self_update::COPY_FALLBACK);
     }
+}
+
+/// `announce_done` is for the app the setup script relaunched while the status was still running.
+fn spawn_status_poll(app: AppHandle, path: PathBuf, announce_done: bool) {
+    if app
+        .state::<UpdateOffer>()
+        .polling
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return;
+    }
+    let worker = app.clone();
+    let built = thread::Builder::new()
+        .name("mn-update-poll".into())
+        .spawn(move || {
+            let deadline = Instant::now() + self_update::POLL_FOR;
+            loop {
+                thread::sleep(self_update::POLL_EVERY);
+                if Instant::now() >= deadline {
+                    eprintln!("update: no finished status after 15 minutes");
+                    break;
+                }
+                let status = match self_update::read_status(&path) {
+                    Ok(Some(status)) => status,
+                    Ok(None) => continue,
+                    Err(err) => {
+                        eprintln!("update status: {err}");
+                        continue;
+                    }
+                };
+                match self_update::watch_step(&status, announce_done) {
+                    self_update::PollOutcome::Wait => {}
+                    self_update::PollOutcome::UpToDate => {
+                        if let Err(err) = self_update::mark_seen(&path) {
+                            eprintln!("update status: {err}");
+                        }
+                        finish_update_wait(&worker, "up_to_date", self_update::ALREADY_NEWEST);
+                        break;
+                    }
+                    self_update::PollOutcome::Failed { message } => {
+                        finish_update_wait(&worker, "failed", &message);
+                        break;
+                    }
+                    self_update::PollOutcome::Updated { version } => {
+                        let message = self_update::updated_message(&version);
+                        notify(&worker, &message);
+                        if let Err(err) = self_update::mark_seen(&path) {
+                            eprintln!("update status: {err}");
+                        }
+                        finish_update_wait(&worker, "quiet", "");
+                        break;
+                    }
+                }
+            }
+            worker
+                .state::<UpdateOffer>()
+                .polling
+                .store(false, Ordering::SeqCst);
+        });
+    if let Err(err) = built {
+        app.state::<UpdateOffer>()
+            .polling
+            .store(false, Ordering::SeqCst);
+        eprintln!("could not watch the update: {err}");
+    }
+}
+
+fn finish_update_wait(app: &AppHandle, phase: &str, message: &str) {
+    app.state::<UpdateOffer>()
+        .updating
+        .store(false, Ordering::SeqCst);
+    let prompt = stored_prompt(app);
+    emit_update(app, &update_payload(phase, "", &prompt, message));
+}
+
+/// Starts the copied script in its own session so it survives this app quitting.
+fn spawn_detached(spec: &self_update::SpawnSpec) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        use std::process::{Command, Stdio};
+        let mut cmd = Command::new(&spec.program);
+        cmd.args(&spec.args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        // nohup does not start a new session. setsid does, and it fails if the process is
+        // already a process-group leader, so only the nohup path asks for a new group.
+        if spec.own_process_group {
+            cmd.process_group(0);
+        }
+        let mut child = cmd
+            .spawn()
+            .map_err(|err| format!("Could not start the update: {err}"))?;
+        thread::spawn(move || {
+            let _ = child.wait();
+        });
+        Ok(())
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        use std::process::{Command, Stdio};
+        let _ = spec.own_process_group;
+        let mut cmd = Command::new(&spec.program);
+        cmd.args(&spec.args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(self_update::windows_creation_flags());
+        let mut child = cmd
+            .spawn()
+            .map_err(|err| format!("Could not start the update: {err}"))?;
+        thread::spawn(move || {
+            let _ = child.wait();
+        });
+        Ok(())
+    }
+}
+
+/// First look at the status file after the window is up. `done` notifies and marks seen.
+#[tauri::command]
+fn startup_update(app: AppHandle) -> UpdatePayload {
+    let Some(path) = update_status_path() else {
+        return quiet_payload();
+    };
+    let status = match self_update::read_status(&path) {
+        Ok(Some(status)) => status,
+        Ok(None) => return quiet_payload(),
+        Err(err) => {
+            eprintln!("update status: {err}");
+            return quiet_payload();
+        }
+    };
+    let prompt = repair_prompt();
+    match self_update::notice_on_start(&status, chrono::Utc::now()) {
+        self_update::StartNotice::Quiet => quiet_payload(),
+        self_update::StartNotice::Updated { version } => {
+            let message = self_update::updated_message(&version);
+            notify(&app, &message);
+            if let Err(err) = self_update::mark_seen(&path) {
+                eprintln!("update status: {err}");
+            }
+            quiet_payload()
+        }
+        self_update::StartNotice::Failed { message } => {
+            update_payload("failed", "", &prompt, &message)
+        }
+        self_update::StartNotice::InProgress => {
+            app.state::<UpdateOffer>()
+                .updating
+                .store(true, Ordering::SeqCst);
+            spawn_status_poll(app, path, true);
+            update_payload("updating", "", &prompt, self_update::UPDATING)
+        }
+    }
+}
+
+/// Widget button or the follow-up from a tray click's event. Refusals are events, not errors.
+#[tauri::command]
+fn start_update(app: AppHandle) {
+    begin_update(&app, false);
+}
+
+/// The failed-update note was dismissed. Later launches stay quiet.
+#[tauri::command]
+fn dismiss_update_notice() -> Result<(), String> {
+    if let Some(path) = update_status_path() {
+        self_update::mark_seen(&path)?;
+    }
+    Ok(())
+}
+
+/// "Get help": copy the repair sentence, then mark the failure seen.
+#[tauri::command]
+fn copy_update_help(app: AppHandle) -> Result<(), String> {
+    let prompt = repair_prompt();
+    app.clipboard()
+        .write_text(&prompt)
+        .map_err(|err| format!("Could not copy: {err}"))?;
+    if let Some(path) = update_status_path() {
+        if let Err(err) = self_update::mark_seen(&path) {
+            eprintln!("update status: {err}");
+        }
+    }
+    emit_update(
+        &app,
+        &update_payload("copied", "", &prompt, self_update::COPY_HELP),
+    );
+    Ok(())
 }
 
 /// Fallback when the webview clipboard refuses the write. The button click is the gesture.
@@ -943,7 +1276,11 @@ pub fn run() {
             current_edge,
             selftest_enabled,
             start_drag,
-            copy_update_prompt
+            copy_update_prompt,
+            start_update,
+            startup_update,
+            dismiss_update_notice,
+            copy_update_help
         ])
         .setup(|app| {
             let handle = app.handle();
