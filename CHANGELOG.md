@@ -3,13 +3,14 @@
 Newest first. "What's new for you" is read by Claude to tell project managers what changed after an update, so keep it plain.
 "Technical" is for developers. `scripts/release.sh` needs a `## vX.Y.Z` heading here before it makes a release, and replaces `unreleased` with the date.
 
-## v0.1.8 - 2026-10-24
+## v0.1.9 - unreleased
 
 ### What's new for you
 - Updating is one click: when the widget shows **Update** with a version number, click it. Meeting Notes installs the newest version, restarts by itself and tells you when it is done. No need to open Claude.
 - If an update ever fails, your old version is put back and a **Get help** button appears.
 
 ### Technical
+- v0.1.8 was tagged but never released (a Windows-only test failed); v0.1.9 ships the same changes.
 - `scripts/setup/update.sh` / `update.ps1`: fetch tags, check out the newest, `setup --update`, `mn doctor`, roll back on failure; status in `update-status.json`, log in `update.log` next to the config.
 - App: `start_update` runs the copied script detached (own process group / DETACHED_PROCESS), refuses while recording or writing notes, polls the status file, reports the result after the restart (`self_update.rs`).
 
