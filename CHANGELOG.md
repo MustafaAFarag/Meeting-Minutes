@@ -3,6 +3,20 @@
 Newest first. "What's new for you" is read by Claude to tell project managers what changed after an update, so keep it plain.
 "Technical" is for developers. `scripts/release.sh` needs a `## vX.Y.Z` heading here before it makes a release, and replaces `unreleased` with the date.
 
+## v0.1.7 - unreleased
+
+### What's new for you
+- You can start recording your next meeting while the last one is still being written up. Notes are written one after another, and a small badge shows the progress.
+- If you forget to press Stop between two back-to-back meetings, you now get a separate card for each meeting.
+- Ask MM has two new buttons: **Weekly team recap** (a friendly email to the team about the week) and **Project kick-off brief** (an internal brief from a kick-off meeting).
+- Meeting cards are written by Claude Opus 5.5 for better notes.
+
+### Technical
+- App: recording and processing are separate; a FIFO queue (`app/src-tauri/src/queue.rs`) processes stopped sessions in order, keeps failures for Try again, and re-queues unfinished sessions at launch. New `mn-queue` event and `queue_status` command.
+- Card schema returns 1-4 meetings with transcript ranges; extra meetings become `<session>-2` dirs with their own transcript slice and start time.
+- Config `card_model` (default `claude-opus-5-5`) and `card_effort` (default `medium`) for the card.
+- Publish prompt re-reads the page and republishes when the live version differs.
+
 ## v0.1.6 - 2026-10-24
 
 ### What's new for you
