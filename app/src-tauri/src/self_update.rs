@@ -699,15 +699,17 @@ mod tests {
     fn setsid_is_preferred_and_only_when_it_is_on_path() {
         assert_eq!(unix_detach(true), UnixDetach::Setsid);
         assert_eq!(unix_detach(false), UnixDetach::Nohup);
+        // The platform's PATH separator: a Windows temp dir contains "C:".
+        let sep = if cfg!(windows) { ';' } else { ':' };
         let dir = tempfile::tempdir().unwrap();
         assert!(!command_on_path(
             "setsid",
             dir.path().to_str().unwrap(),
-            ':'
+            sep
         ));
         fs::write(dir.path().join("setsid"), b"#!/bin/sh\n").unwrap();
-        assert!(command_on_path("setsid", dir.path().to_str().unwrap(), ':'));
-        assert!(!command_on_path("setsid", "", ':'));
+        assert!(command_on_path("setsid", dir.path().to_str().unwrap(), sep));
+        assert!(!command_on_path("setsid", "", sep));
     }
 
     #[test]
