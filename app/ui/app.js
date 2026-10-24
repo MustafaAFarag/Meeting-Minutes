@@ -24,6 +24,11 @@ let updatePrompt = "";
 // After Stop is clicked, late "recording" events must not flip the view back.
 let stopping = false;
 let statusDetail = "";
+// The notes queue (mn-queue). It is separate from the recording view above: it only drives the
+// badge on the My Meetings button, the Try again button, and the Done mark.
+let queueBusy = false;
+let queueError = "";
+let queueText = "";
 
 const STATUS_TITLE = {
   idle: () => "Ready",
@@ -37,7 +42,7 @@ function updateButtons(name) {
   const canStart = name === "idle" || name === "done" || name === "error";
   $("start").disabled = !canStart;
   $("stop").disabled = name !== "recording";
-  $("retry").hidden = name !== "error";
+  $("retry").hidden = name !== "error" && !queueError;
 }
 
 function setView(name) {
@@ -77,6 +82,11 @@ function clip(text) {
   return text.length > DETAIL_CHARS ? text.slice(0, DETAIL_CHARS).trimEnd() + "…" : text;
 }
 
+// The tooltip of the My Meetings button: what the notes queue is doing, then the button's job.
+function meetingsTitle() {
+  return queueText ? queueText + " - " + TITLE_OPEN_MEETINGS : TITLE_OPEN_MEETINGS;
+}
+
 function setWorking(text) {
   statusDetail = text;
   setView("working");
@@ -99,7 +109,7 @@ function showNotice(message) {
   btn.classList.add("alert");
   clearTimeout(noticeTimer);
   noticeTimer = setTimeout(() => {
-    btn.title = TITLE_OPEN_MEETINGS;
+    btn.title = meetingsTitle();
     btn.classList.remove("alert");
   }, NOTICE_MS);
 }
@@ -120,26 +130,47 @@ function onStatus(status) {
       if (app.dataset.view !== "recording") setView("recording");
       break;
     case "stopped":
-    case "transcribing":
-      setWorking("Transcribing…");
-      break;
-    case "summarizing":
-      setWorking("Writing your notes…");
-      break;
-    case "publishing":
-      setWorking("Updating My Meetings…");
-      break;
-    case "published":
+      // The recording is saved and the next Start is allowed; its notes are written in the
+      // background (see onQueue).
       stopping = false;
-      setView("done");
+      setView("idle");
       break;
     case "error":
       showError(status.message);
       break;
     default:
-      // transcribed, summarized and anything newer: keep what is on screen.
+      // Anything else is not about the recording: keep what is on screen.
       break;
   }
+}
+
+// "Writing notes (2 waiting)". The stage names come from the backend.
+function describeQueue(queue) {
+  if (!queue.processing) return "";
+  const waiting = queue.waiting > 0 ? " (" + queue.waiting + " waiting)" : "";
+  return queue.processing + waiting;
+}
+
+function showQueueBadge(queue) {
+  const state = queueError ? "error" : queueBusy ? "working" : "idle";
+  $("queue-badge").dataset.state = state;
+  $("queue-count").textContent = queueBusy && queue.waiting > 0 ? "+" + queue.waiting : "";
+  queueText = queueError ? "Notes failed: " + queueError : describeQueue(queue);
+  const btn = $("open-meetings");
+  btn.title = meetingsTitle();
+  btn.setAttribute("aria-label", btn.title);
+}
+
+function onQueue(queue) {
+  const wasBusy = queueBusy;
+  queueBusy = Boolean(queue.processing);
+  queueError = queue.last_error ? clip(String(queue.last_error)) : "";
+  showQueueBadge(queue);
+  const view = app.dataset.view;
+  updateButtons(view);
+  // Everything is written and nothing else waits: show Done, unless a recording is on screen.
+  const finished = wasBusy && !queueBusy && !queueError && queue.waiting === 0;
+  if (finished && (view === "idle" || view === "done")) setView("done");
 }
 
 async function run(command, onFail) {
@@ -161,14 +192,17 @@ $("start").addEventListener("click", () => {
 $("stop").addEventListener("click", () => {
   stopping = true;
   $("stop").blur();
-  setWorking("Transcribing…");
+  // Until the "stopped" event: the recording is being closed and Start would still be refused.
+  setWorking("Saving the recording…");
   // "Not recording" means it already stopped on its own; the status events carry on.
   run("stop", console.error);
 });
 
+// Failed notes are queued again by the backend. With no failed notes, this is a failed
+// recording, and the backend starts a new one.
 $("retry").addEventListener("click", () => {
   stopping = false;
-  setWorking("Transcribing…");
+  if (!queueError) resetMeters();
   run("retry", showError);
 });
 
@@ -247,8 +281,11 @@ function setEdge(edge) {
 }
 
 listen("mn-status", (event) => onStatus(event.payload));
+listen("mn-queue", (event) => onQueue(event.payload));
 listen("mn-edge", (event) => setEdge(event.payload));
 listen("mn-update", (event) => showUpdate(event.payload));
 invoke("current_edge").then(setEdge).catch(console.error);
+// Sessions queued before the window loaded (restart recovery).
+invoke("queue_status").then(onQueue).catch(console.error);
 setView("idle");
 openColumn();
