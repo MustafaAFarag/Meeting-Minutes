@@ -1,6 +1,8 @@
 //! The doctor command checks the local setup without recording or publishing anything.
 #![cfg(unix)]
 
+mod common;
+
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -22,6 +24,7 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        common::use_test_log_dir();
         let dir = tempfile::tempdir().unwrap();
         let whisper = dir.path().join("fake-whisper");
         let claude = dir.path().join("fake-claude");

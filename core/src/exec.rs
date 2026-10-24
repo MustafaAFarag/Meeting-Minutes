@@ -5,9 +5,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::config::Config;
-
-/// How much of a CLI's output goes into an error message.
-const REASON_CHARS: usize = 300;
+use crate::logging::scrub;
 
 /// Windows `CREATE_NO_WINDOW`: a console program started by a GUI app gets no console window.
 #[cfg(windows)]
@@ -186,19 +184,17 @@ fn join_pipe(reader: thread::JoinHandle<io::Result<Vec<u8>>>) -> io::Result<Vec<
         .map_err(|_| io::Error::other("command output reader stopped"))?
 }
 
-/// The first 300 characters of stdout, or of stderr when stdout is empty.
+/// A content-free output summary for logs and technical error chains.
 pub(crate) fn reason(out: &Output) -> String {
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let text = if stdout.trim().is_empty() {
-        String::from_utf8_lossy(&out.stderr).into_owned()
-    } else {
-        stdout.into_owned()
-    };
-    snippet(&text)
-}
-
-pub(crate) fn snippet(text: &str) -> String {
-    text.trim().chars().take(REASON_CHARS).collect()
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let tail = stderr.lines().rev().take(5).collect::<Vec<_>>();
+    let tail = tail.into_iter().rev().collect::<Vec<_>>().join("\n");
+    format!(
+        "stdout_bytes={} stderr_bytes={} stderr_tail={}",
+        out.stdout.len(),
+        out.stderr.len(),
+        scrub(&tail)
+    )
 }
 
 /// True when `cli` is a path to a file, or a bare name found on PATH.

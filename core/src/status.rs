@@ -1,13 +1,14 @@
 use std::path::PathBuf;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::capture::Track;
+use crate::failure::{ErrorKind, Stage};
 use crate::session::StopReason;
 use crate::summarize::Engine;
 
 /// One JSON line on stdout. The GUI parses these.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "lowercase")]
 pub enum Status {
     Recording {
@@ -43,5 +44,15 @@ pub enum Status {
     },
     Error {
         message: String,
+        #[serde(default)]
+        kind: ErrorKind,
+        #[serde(default)]
+        stage: Stage,
+        #[serde(default = "default_error_hint")]
+        hint: String,
     },
+}
+
+fn default_error_hint() -> String {
+    ErrorKind::Unknown.hint().to_string()
 }

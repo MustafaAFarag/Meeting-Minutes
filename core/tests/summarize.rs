@@ -12,7 +12,7 @@ use mn_core::session::SessionInfo;
 use mn_core::summarize::{
     build_prompt, fill_template, m365_step, summarize, Engine, PUBLISH_PENDING,
 };
-use mn_core::{Config, Status};
+use mn_core::{Config, ErrorKind, Failure, Status};
 use serde_json::{json, Value};
 
 const M365_DOC: &str = include_str!("../../docs/m365-step.md");
@@ -24,6 +24,7 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        common::use_test_log_dir();
         Fixture {
             dir: tempfile::tempdir().unwrap(),
         }
@@ -393,20 +394,20 @@ fn codex_args(call: &Call, session: &Path) {
 fn claude_failures_fall_back_to_codex() {
     let _guard = lock();
     let cases: [(&str, i32, String, &str); 3] = [
-        ("exit 1", 1, String::from("rate limit reached"), "exited with"),
+        ("exit 1", 1, String::from("rate limit reached"), "claude_failed"),
         (
             "is_error",
             0,
             json!({"type":"result","subtype":"success","is_error":true,"result":"You've hit your limit"})
                 .to_string(),
-            "hit your limit",
+            "claude_failed",
         ),
         (
             "no structured_output",
             0,
             json!({"type":"result","subtype":"success","is_error":false,"result":"text only"})
                 .to_string(),
-            "structured_output",
+            "claude_failed",
         ),
     ];
     for (label, exit, stdout, reason_part) in cases {
@@ -439,13 +440,7 @@ fn claude_failures_fall_back_to_codex() {
             json!({"state": "summarizing", "engine": "claude"})
         );
         assert_eq!(statuses[1]["engine"], "codex");
-        assert!(
-            statuses[1]["reason"]
-                .as_str()
-                .unwrap()
-                .contains(reason_part),
-            "{label}: {statuses:?}"
-        );
+        assert_eq!(statuses[1]["reason"], reason_part, "{label}: {statuses:?}");
         assert_eq!(statuses[2]["state"], "summarized");
         assert_eq!(statuses[2]["engine"], "codex");
 
@@ -470,7 +465,7 @@ fn claude_failures_fall_back_to_codex() {
 }
 
 #[test]
-fn both_failing_errors_with_both_reasons_and_writes_nothing() {
+fn both_failing_errors_do_not_include_stdout_content_and_write_nothing() {
     let _guard = lock();
     let fx = Fixture::new();
     let session = fx.session();
@@ -480,8 +475,9 @@ fn both_failing_errors_with_both_reasons_and_writes_nothing() {
 
     let err = summarize(&cfg, &session, |_| {}).unwrap_err();
     let message = format!("{err:#}");
-    assert!(message.contains("out of quota"), "{message}");
-    assert!(message.contains("not logged in"), "{message}");
+    assert!(!message.contains("out of quota"), "{message}");
+    assert!(!message.contains("not logged in"), "{message}");
+    assert!(message.contains("could not write"), "{message}");
     for name in ["card.json", "meeting.json", PUBLISH_PENDING] {
         assert!(!session.join(name).exists(), "{name} must not exist");
     }
@@ -498,9 +494,34 @@ fn codex_output_that_is_not_an_object_fails() {
     let cfg = fx.cfg(&claude, Some(&codex));
 
     let message = format!("{:#}", summarize(&cfg, &session, |_| {}).unwrap_err());
-    assert!(message.contains("nope"), "{message}");
-    assert!(message.contains("codex"), "{message}");
+    assert!(
+        !message.contains("nope"),
+        "stdout must not enter errors: {message}"
+    );
+    assert!(message.to_lowercase().contains("codex"), "{message}");
     assert!(!session.join("card.json").exists());
+}
+
+#[test]
+fn malformed_claude_card_is_classified_as_claude_failed() {
+    let _guard = lock();
+    let fx = Fixture::new();
+    let session = fx.session();
+    let claude = fx.fake(
+        "claude",
+        0,
+        &json!({"structured_output": {}}).to_string(),
+        None,
+    );
+    let cfg = fx.cfg(&claude, None);
+
+    let err = summarize(&cfg, &session, |_| {}).unwrap_err();
+
+    assert_eq!(
+        err.downcast_ref::<Failure>().map(|failure| failure.kind),
+        Some(ErrorKind::ClaudeFailed),
+        "{err:#}"
+    );
 }
 
 #[test]
@@ -512,14 +533,18 @@ fn missing_codex_is_reported_next_to_the_claude_reason() {
     let cfg = fx.cfg(&claude, None);
 
     let message = format!("{:#}", summarize(&cfg, &session, |_| {}).unwrap_err());
-    assert!(message.contains("claude broke"), "{message}");
-    assert!(message.contains("codex"), "{message}");
-    assert!(message.contains("no-such-codex"), "{message}");
+    assert!(!message.contains("claude broke"), "{message}");
+    assert!(message.to_lowercase().contains("codex"), "{message}");
+    assert!(message.contains("fallback is unavailable"), "{message}");
 }
 
 #[test]
-fn reasons_are_cut_to_300_chars() {
+fn stdout_size_is_reported_without_copying_stdout_into_errors() {
     let _guard = lock();
+    let logs = tempfile::tempdir().unwrap();
+    common::use_test_log_dir();
+    let old_log_dir = std::env::var_os("MN_LOG_DIR");
+    std::env::set_var("MN_LOG_DIR", logs.path());
     let fx = Fixture::new();
     let session = fx.session();
     let long = "x".repeat(1000);
@@ -527,8 +552,13 @@ fn reasons_are_cut_to_300_chars() {
     let cfg = fx.cfg(&claude, None);
 
     let message = format!("{:#}", summarize(&cfg, &session, |_| {}).unwrap_err());
-    assert!(message.contains(&"x".repeat(300)));
-    assert!(!message.contains(&"x".repeat(301)));
+    assert!(!message.contains(&"x".repeat(20)), "{message}");
+    let log = fs::read_to_string(logs.path().join("meeting-notes.log")).unwrap();
+    assert!(log.contains("stdout_bytes=1000"), "{log}");
+    match old_log_dir {
+        Some(value) => std::env::set_var("MN_LOG_DIR", value),
+        None => std::env::remove_var("MN_LOG_DIR"),
+    }
 }
 
 #[test]

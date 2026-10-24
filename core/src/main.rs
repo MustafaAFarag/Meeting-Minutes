@@ -6,7 +6,7 @@ use std::sync::atomic::Ordering;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use mn_core::capture::Track;
-use mn_core::{CaptureSource, Config, RecordOptions, Status};
+use mn_core::{classify, CaptureSource, Config, ErrorKind, Failure, RecordOptions, Stage, Status};
 
 #[derive(Parser)]
 #[command(
@@ -49,6 +49,8 @@ enum Command {
     },
     /// Print the effective config
     Config,
+    /// Create a diagnostics report on the Desktop
+    Report,
     /// Write raw s16le 16 kHz mono PCM to stdout: `mic` or `system` (Windows and macOS)
     Capture { source: CaptureSource },
 }
@@ -72,7 +74,16 @@ fn record_options(max_seconds: Option<u64>) -> Result<RecordOptions> {
 }
 
 fn run(cli: Cli) -> Result<()> {
-    let cfg = Config::load(cli.config.as_deref())?;
+    if matches!(&cli.command, Command::Report) {
+        let path = mn_core::create_report(cli.config.as_deref())?;
+        println!(
+            "REPORT {}",
+            serde_json::json!({ "path": path.display().to_string() })
+        );
+        return Ok(());
+    }
+    let cfg = Config::load(cli.config.as_deref())
+        .map_err(|err| Failure::attach(err, ErrorKind::Config, Stage::Other))?;
     match cli.command {
         Command::Doctor => {}
         Command::Record { max_seconds } => {
@@ -112,11 +123,13 @@ fn run(cli: Cli) -> Result<()> {
             }
         }
         Command::Capture { source } => mn_core::run_capture(source, io::stdout().lock())?,
+        Command::Report => unreachable!("reports return before config loading"),
     }
     Ok(())
 }
 
 fn main() -> ExitCode {
+    mn_core::logging::header("mn");
     let cli = Cli::parse();
     if matches!(&cli.command, Command::Doctor) {
         let expected = std::env::var("MN_EXPECTED_VERSION").ok();
@@ -129,14 +142,41 @@ fn main() -> ExitCode {
         };
     }
     // `capture` owns stdout: it is the PCM stream, so an error goes to stderr only.
-    let machine_readable = !matches!(cli.command, Command::Config | Command::Capture { .. });
+    let stage = match &cli.command {
+        Command::Record { .. } | Command::Run { .. } => Stage::Record,
+        Command::Transcribe { .. } => Stage::Transcribe,
+        Command::Summarize { .. } => Stage::Summarize,
+        Command::Publish => Stage::Publish,
+        Command::InitPage => Stage::InitPage,
+        _ => Stage::Other,
+    };
+    let machine_readable = !matches!(
+        &cli.command,
+        Command::Config | Command::Capture { .. } | Command::Report
+    );
     match run(cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            let message = format!("{err:#}");
-            eprintln!("error: {message}");
+            let actual_stage = err
+                .downcast_ref::<Failure>()
+                .map(|failure| failure.stage)
+                .unwrap_or(stage);
+            let (kind, message, hint) = classify(&err, actual_stage);
+            mn_core::logging::error(
+                "mn",
+                &format!(
+                    "stage={} kind={} detail={err:#}",
+                    actual_stage.as_str(),
+                    kind.as_str()
+                ),
+            );
             if machine_readable {
-                emit(Status::Error { message });
+                emit(Status::Error {
+                    message: message.to_string(),
+                    kind,
+                    stage: actual_stage,
+                    hint: hint.to_string(),
+                });
             }
             ExitCode::FAILURE
         }

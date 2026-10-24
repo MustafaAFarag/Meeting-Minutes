@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::DateTime;
@@ -8,8 +9,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::capture::Track;
 use crate::config::Config;
-use crate::exec::command;
+use crate::exec::{command, reason};
+use crate::failure::{classify, ErrorKind, Failure, Stage};
 use crate::levels::wav_peak_db;
+use crate::logging::{self, session_name};
 use crate::session::SessionInfo;
 use crate::status::Status;
 
@@ -215,9 +218,44 @@ fn header(info: Option<&SessionInfo>, session_dir: &Path) -> String {
 /// Transcribes me.wav and them.wav, writes transcript.md and transcript.json, then deletes the audio.
 /// On any failure the audio is kept so the session can be retried.
 pub fn transcribe(cfg: &Config, session_dir: &Path, on_status: impl Fn(Status)) -> Result<PathBuf> {
+    let started = Instant::now();
+    let name = session_name(session_dir);
+    logging::info("transcribe", &format!("start session={name}"));
+    match transcribe_inner(cfg, session_dir, on_status) {
+        Ok(path) => {
+            logging::info(
+                "transcribe",
+                &format!(
+                    "end session={name} success=true duration_ms={}",
+                    started.elapsed().as_millis()
+                ),
+            );
+            Ok(path)
+        }
+        Err(err) => {
+            let kind = classify(&err, Stage::Transcribe).0;
+            logging::error(
+                "transcribe",
+                &format!(
+                    "end session={name} success=false kind={} detail={err:#}",
+                    kind.as_str()
+                ),
+            );
+            Err(Failure::attach(err, kind, Stage::Transcribe))
+        }
+    }
+}
+
+fn transcribe_inner(
+    cfg: &Config,
+    session_dir: &Path,
+    on_status: impl Fn(Status),
+) -> Result<PathBuf> {
     let model = cfg.whisper_model.as_deref().ok_or_else(|| {
-        anyhow!(
-            "whisper_model is not set; add `whisper_model = \"/path/to/ggml-small.bin\"` to the config file (see `mn config`)"
+        Failure::attach(
+            anyhow!("whisper_model is not set"),
+            ErrorKind::Config,
+            Stage::Transcribe,
         )
     })?;
     let wavs: Vec<(Track, PathBuf)> = Track::ALL
@@ -231,15 +269,56 @@ pub fn transcribe(cfg: &Config, session_dir: &Path, on_status: impl Fn(Status)) 
     let info = SessionInfo::load(session_dir)?;
 
     let mut segments = Vec::new();
+    let mut silent_tracks = 0;
     for (track, wav) in &wavs {
         // Whole-file RMS would skip a quiet speaker in a long call, so look at single windows.
         if wav_peak_db(wav)? <= SILENT_TRACK_DB {
+            silent_tracks += 1;
+            logging::warn(
+                "transcribe",
+                &format!(
+                    "track={} silent; skipping file={}.wav",
+                    track.name(),
+                    track.name()
+                ),
+            );
             continue;
         }
+        logging::info(
+            "transcribe",
+            &format!("track={} start file={}.wav", track.name(), track.name()),
+        );
+        let track_started = Instant::now();
         on_status(Status::Transcribing { track: *track });
-        segments.extend(run_whisper(cfg, model, session_dir, *track, wav)?);
+        let transcribed = run_whisper(cfg, model, session_dir, *track, wav)?;
+        logging::info(
+            "transcribe",
+            &format!(
+                "track={} end segments={} duration_ms={}",
+                track.name(),
+                transcribed.len(),
+                track_started.elapsed().as_millis()
+            ),
+        );
+        segments.extend(transcribed);
+    }
+    if silent_tracks == wavs.len() {
+        return Err(Failure::attach(
+            anyhow!("both audio tracks were silent"),
+            ErrorKind::NoSound,
+            Stage::Transcribe,
+        ));
     }
     let segments = merge(segments);
+    logging::info(
+        "transcribe",
+        &format!(
+            "tracks={} silent_tracks={} segments={}",
+            wavs.len(),
+            silent_tracks,
+            segments.len()
+        ),
+    );
 
     let json_path = session_dir.join("transcript.json");
     fs::write(&json_path, serde_json::to_string_pretty(&segments)?)
@@ -283,14 +362,11 @@ fn run_whisper(
         .output()
         .with_context(|| format!("could not run whisper_cli {}", cfg.whisper_cli.display()))?;
     if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        let tail: Vec<&str> = stderr.lines().rev().take(5).collect();
-        let tail: Vec<&str> = tail.into_iter().rev().collect();
         bail!(
-            "whisper failed on {}.wav ({}): {}",
+            "whisper failed on {}.wav ({}; {})",
             track.name(),
             out.status,
-            tail.join("\n")
+            reason(&out)
         );
     }
 
@@ -299,9 +375,20 @@ fn run_whisper(
     let mut segments =
         parse_whisper_json(&json, track).with_context(|| format!("parsing {}", path.display()))?;
     segments.retain(|s| !is_hallucination(&s.text) && !is_garbage(&s.text));
-    Ok(drop_repeats(
-        segments.into_iter().map(fix_long_span).collect(),
-    ))
+    let segments = drop_repeats(segments.into_iter().map(fix_long_span).collect());
+    logging::info(
+        "transcribe",
+        &format!(
+            "track={} whisper exit_code={} {} segments={}",
+            track.name(),
+            out.status
+                .code()
+                .map_or_else(|| "signal".to_string(), |code| code.to_string()),
+            reason(&out),
+            segments.len()
+        ),
+    );
+    Ok(segments)
 }
 
 /// Builds the shared whisper.cpp command used by normal transcribing and `mn doctor`.

@@ -2,15 +2,17 @@ use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Duration, Local, SecondsFormat};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 use crate::config::Config;
-use crate::exec::{claude_command, command, reason, resolves, run, snippet};
+use crate::exec::{claude_command, command, reason, resolves, run};
+use crate::failure::{classify, ErrorKind, Failure, Stage};
+use crate::logging::{self, session_name};
 use crate::session::{SessionInfo, TrackSeconds};
 use crate::status::Status;
 
@@ -31,10 +33,7 @@ pub const PUBLISH_PENDING: &str = "PUBLISH_PENDING";
 const CODEX_SCHEMA_FILE: &str = ".card.schema.json";
 const CODEX_OUT_FILE: &str = ".codex-card.json";
 
-/// Longest `reason` on the fallback status line.
-const STATUS_REASON_CHARS: usize = 100;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Engine {
     Claude,
@@ -112,6 +111,46 @@ pub fn build_prompt(
 /// Writes card.json, meeting.json and the PUBLISH_PENDING marker into the session dir.
 /// Claude first, Codex if Claude fails. Nothing is written when both fail.
 pub fn summarize(cfg: &Config, session_dir: &Path, on_status: impl Fn(Status)) -> Result<PathBuf> {
+    let started = Instant::now();
+    let name = session_name(session_dir);
+    logging::info(
+        "summarize",
+        &format!(
+            "start session={name} engine=claude model={}",
+            cfg.card_model
+        ),
+    );
+    let result = summarize_inner(cfg, session_dir, on_status);
+    match result {
+        Ok(path) => {
+            logging::info(
+                "summarize",
+                &format!(
+                    "end session={name} success=true duration_ms={}",
+                    started.elapsed().as_millis()
+                ),
+            );
+            Ok(path)
+        }
+        Err(err) => {
+            let kind = classify(&err, Stage::Summarize).0;
+            logging::error(
+                "summarize",
+                &format!(
+                    "end session={name} success=false kind={} detail={err:#}",
+                    kind.as_str()
+                ),
+            );
+            Err(Failure::attach(err, kind, Stage::Summarize))
+        }
+    }
+}
+
+fn summarize_inner(
+    cfg: &Config,
+    session_dir: &Path,
+    on_status: impl Fn(Status),
+) -> Result<PathBuf> {
     let session_dir = fs::canonicalize(session_dir)
         .with_context(|| format!("session dir {}", session_dir.display()))?;
     let info = SessionInfo::load(&session_dir)?
@@ -148,29 +187,71 @@ pub fn summarize(cfg: &Config, session_dir: &Path, on_status: impl Fn(Status)) -
     let (engine, output) = match run_claude(cfg, &session_dir, &claude_prompt) {
         Ok(output) => (Engine::Claude, output),
         Err(claude_err) => {
-            let claude_reason = format!("{claude_err:#}");
+            let (kind, _, _) = classify(&claude_err, Stage::Summarize);
+            let reason = kind.as_str();
+            logging::warn(
+                "summarize",
+                &format!("engine=claude fallback_reason={reason} detail={claude_err:#}"),
+            );
             if !resolves(&cfg.codex_cli) {
-                bail!(
-                    "claude failed ({claude_reason}); codex fallback not available: {} not found",
-                    cfg.codex_cli.display()
-                );
+                return Err(Failure::attach(
+                    anyhow!("Claude failed and the Codex fallback is unavailable"),
+                    kind,
+                    Stage::Summarize,
+                ));
             }
+            logging::info(
+                "summarize",
+                &format!("engine=codex fallback_reason={reason} model=codex"),
+            );
             on_status(Status::Summarizing {
                 engine: Engine::Codex,
-                reason: Some(short(&claude_reason)),
+                reason: Some(reason.to_string()),
             });
             let codex_prompt = build_prompt(cfg, &session_dir, &info, Engine::Codex)?;
             match run_codex(cfg, &session_dir, &codex_prompt) {
                 Ok(output) => (Engine::Codex, output),
                 Err(codex_err) => {
-                    bail!("claude failed ({claude_reason}); codex failed ({codex_err:#})")
+                    let codex_kind = classify(&codex_err, Stage::Summarize).0;
+                    logging::error(
+                        "summarize",
+                        &format!(
+                            "engine=codex failed kind={} detail={codex_err:#}",
+                            codex_kind.as_str()
+                        ),
+                    );
+                    let kind = if codex_kind == ErrorKind::ClaudeFailed {
+                        kind
+                    } else {
+                        codex_kind
+                    };
+                    return Err(Failure::attach(
+                        anyhow!("Claude and Codex could not write the notes"),
+                        kind,
+                        Stage::Summarize,
+                    ));
                 }
             }
         }
     };
 
-    let meetings = parse_meetings(&output)?;
-    let transcripts = split_transcript(&transcript, &meetings)?;
+    let meetings = parse_meetings(&output)
+        .map_err(|err| Failure::attach(err, ErrorKind::ClaudeFailed, Stage::Summarize))?;
+    logging::info(
+        "summarize",
+        &format!(
+            "engine={} model={} meetings={}",
+            engine.section(),
+            if engine == Engine::Claude {
+                cfg.card_model.as_str()
+            } else {
+                "codex"
+            },
+            meetings.len()
+        ),
+    );
+    let transcripts = split_transcript(&transcript, &meetings)
+        .map_err(|err| Failure::attach(err, ErrorKind::ClaudeFailed, Stage::Summarize))?;
     if meetings.len() == 1 {
         write_one_meeting(&session_dir, &info, &meetings[0].card, engine)?;
         write_completion_card(&card_path, &meetings[0].card)?;
@@ -262,13 +343,13 @@ fn parse_meetings(output: &Value) -> Result<Vec<MeetingPart>> {
 fn parse_transcript_offset(value: &str) -> Result<u64> {
     let bytes = value.as_bytes();
     if bytes.len() != 8 || bytes[2] != b':' || bytes[5] != b':' {
-        bail!("`{value}` is not HH:MM:SS");
+        bail!("meeting range is not HH:MM:SS");
     }
     let two_digits = |start: usize| -> Result<u64> {
         let first = bytes[start];
         let second = bytes[start + 1];
         if !first.is_ascii_digit() || !second.is_ascii_digit() {
-            bail!("`{value}` is not HH:MM:SS");
+            bail!("meeting range is not HH:MM:SS");
         }
         Ok(u64::from(first - b'0') * 10 + u64::from(second - b'0'))
     };
@@ -276,7 +357,7 @@ fn parse_transcript_offset(value: &str) -> Result<u64> {
     let minutes = two_digits(3)?;
     let seconds = two_digits(6)?;
     if minutes > 59 || seconds > 59 {
-        bail!("`{value}` is not a valid HH:MM:SS offset");
+        bail!("meeting range is not a valid HH:MM:SS offset");
     }
     Ok(hours * 3600 + minutes * 60 + seconds)
 }
@@ -508,11 +589,6 @@ fn write_sibling_meeting(
     fs::write(&marker, "").with_context(|| format!("writing {}", marker.display()))
 }
 
-fn short(reason: &str) -> String {
-    let first_line = reason.lines().next().unwrap_or_default();
-    first_line.chars().take(STATUS_REASON_CHARS).collect()
-}
-
 fn run_claude(cfg: &Config, session_dir: &Path, prompt: &str) -> Result<Value> {
     let schema: Value = serde_json::from_str(SCHEMA).context("embedded card schema")?;
     let mut cmd = claude_command(cfg);
@@ -523,18 +599,22 @@ fn run_claude(cfg: &Config, session_dir: &Path, prompt: &str) -> Result<Value> {
         .current_dir(session_dir);
     let out = run(&mut cmd, Some(prompt))
         .with_context(|| format!("could not run claude_cli {}", cfg.claude_cli.display()))?;
+    logging::info(
+        "summarize",
+        &format!("engine=claude exit_code={} {}", out.status, reason(&out)),
+    );
     if !out.status.success() {
         bail!("claude exited with {}: {}", out.status, reason(&out));
     }
     let stdout = String::from_utf8_lossy(&out.stdout);
     let reply: Value = serde_json::from_str(&stdout)
-        .map_err(|e| anyhow!("claude output is not JSON ({e}): {}", snippet(&stdout)))?;
+        .map_err(|e| anyhow!("claude output is not valid JSON ({e}; {})", reason(&out)))?;
     if reply["is_error"].as_bool().unwrap_or(false) {
-        bail!("claude reported an error: {}", snippet(&stdout));
+        bail!("claude reported an error ({})", reason(&out));
     }
     match reply.get("structured_output") {
         Some(card) if card.is_object() => Ok(card.clone()),
-        _ => bail!("claude returned no structured_output: {}", snippet(&stdout)),
+        _ => bail!("claude returned no structured_output ({})", reason(&out)),
     }
 }
 
@@ -566,15 +646,26 @@ fn run_codex_with_files(
         .current_dir(session_dir);
     let out = run(&mut cmd, Some(prompt))
         .with_context(|| format!("could not run codex_cli {}", cfg.codex_cli.display()))?;
+    logging::info(
+        "summarize",
+        &format!("engine=codex exit_code={} {}", out.status, reason(&out)),
+    );
     if !out.status.success() {
         bail!("codex exited with {}: {}", out.status, reason(&out));
     }
     let text = fs::read_to_string(out_path)
         .with_context(|| format!("codex wrote no {}", out_path.display()))?;
-    let card: Value = serde_json::from_str(&text)
-        .map_err(|e| anyhow!("codex output is not JSON ({e}): {}", snippet(&text)))?;
+    let card: Value = serde_json::from_str(&text).map_err(|e| {
+        anyhow!(
+            "codex output is not valid JSON ({e}; output_bytes={})",
+            text.len()
+        )
+    })?;
     if !card.is_object() {
-        bail!("codex output is not a JSON object: {}", snippet(&text));
+        bail!(
+            "codex output is not a JSON object (output_bytes={})",
+            text.len()
+        );
     }
     Ok(card)
 }

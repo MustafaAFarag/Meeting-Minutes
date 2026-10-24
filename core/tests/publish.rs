@@ -22,6 +22,7 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        common::use_test_log_dir();
         Fixture {
             dir: tempfile::tempdir().unwrap(),
         }
@@ -304,7 +305,10 @@ fn failure_keeps_the_markers_and_cleans_the_staging_dir() {
         };
         let (result, statuses) = run(&cfg, &fx.config_dir());
         let message = format!("{:#}", result.unwrap_err());
-        assert!(message.contains(stdout), "{message}");
+        assert!(
+            !message.contains(stdout),
+            "stdout must not enter errors: {message}"
+        );
 
         assert!(mid.join(PUBLISH_PENDING).exists());
         assert!(new.join(PUBLISH_PENDING).exists());

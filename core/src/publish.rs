@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Local, SecondsFormat};
@@ -10,6 +10,8 @@ use serde_json::{json, Value};
 
 use crate::config::Config;
 use crate::exec::{claude_command, reason, run};
+use crate::failure::{classify, Failure, Stage};
+use crate::logging;
 use crate::status::Status;
 use crate::summarize::{MEETING_FILE, PUBLISH_PENDING, TRANSCRIPT_FILE};
 
@@ -23,8 +25,10 @@ const STAGING_DIR: &str = ".staging";
 /// Publishes every pending session (meeting.json plus a PUBLISH_PENDING marker) to the
 /// "My Meetings" artifact. The markers are removed only after a successful publish.
 pub fn publish(cfg: &Config, on_status: impl Fn(Status)) -> Result<()> {
-    let config_dir = dirs::config_dir().context("could not find the user config directory")?;
-    publish_with_config_dir(cfg, &config_dir, on_status)
+    let result = dirs::config_dir()
+        .context("could not find the user config directory")
+        .and_then(|config_dir| publish_inner(cfg, &config_dir, false, on_status));
+    finish_publish(result, Stage::Publish)
 }
 
 /// Same as `publish`, with the user config directory given (it holds `meeting-notes/artifact_url.txt`).
@@ -33,14 +37,19 @@ pub fn publish_with_config_dir(
     config_dir: &Path,
     on_status: impl Fn(Status),
 ) -> Result<()> {
-    publish_inner(cfg, config_dir, false, on_status)
+    finish_publish(
+        publish_inner(cfg, config_dir, false, on_status),
+        Stage::Publish,
+    )
 }
 
 /// Publishes the page even with no pending meetings: on a new install it creates the
 /// "My Meetings" artifact and saves its URL; later it refreshes the page itself.
 pub fn init_page(cfg: &Config, on_status: impl Fn(Status)) -> Result<()> {
-    let config_dir = dirs::config_dir().context("could not find the user config directory")?;
-    init_page_with_config_dir(cfg, &config_dir, on_status)
+    let result = dirs::config_dir()
+        .context("could not find the user config directory")
+        .and_then(|config_dir| publish_inner(cfg, &config_dir, true, on_status));
+    finish_publish(result, Stage::InitPage)
 }
 
 /// Same as `init_page`, with the user config directory given.
@@ -49,7 +58,28 @@ pub fn init_page_with_config_dir(
     config_dir: &Path,
     on_status: impl Fn(Status),
 ) -> Result<()> {
-    publish_inner(cfg, config_dir, true, on_status)
+    finish_publish(
+        publish_inner(cfg, config_dir, true, on_status),
+        Stage::InitPage,
+    )
+}
+
+fn finish_publish(result: Result<()>, stage: Stage) -> Result<()> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            let kind = classify(&err, stage).0;
+            logging::error(
+                "publish",
+                &format!(
+                    "stage={} success=false kind={} detail={err:#}",
+                    stage.as_str(),
+                    kind.as_str()
+                ),
+            );
+            Err(Failure::attach(err, kind, stage))
+        }
+    }
 }
 
 fn publish_inner(
@@ -58,59 +88,99 @@ fn publish_inner(
     always: bool,
     on_status: impl Fn(Status),
 ) -> Result<()> {
-    let sessions = sessions_with_meeting(&cfg.notes_dir)?;
-    let pending: Vec<&Session> = sessions.iter().filter(|s| s.pending).collect();
-    if pending.is_empty() && !always {
-        return Ok(());
-    }
-    on_status(Status::Publishing {
-        meetings: pending.len(),
-    });
-
-    let staging = Staging::create(&cfg.notes_dir)?;
-    let files = stage_files(&staging.path, &sessions)?;
-    let url_file = config_dir.join("meeting-notes").join(ARTIFACT_URL_FILE);
-    let known_url = known_url(cfg, &url_file);
-    let files_json = serde_json::to_string(&files)?;
-    let prompt = match &known_url {
-        Some(url) => update_prompt(url, &files_json),
-        None => create_prompt(&files_json),
-    };
-
-    let mut cmd = claude_command(cfg);
-    cmd.arg("-p")
-        .arg(&prompt)
-        .args(["--allowedTools", "Artifact"])
-        .env("CLAUDE_CODE_ARTIFACT", "1")
-        .current_dir(&staging.path);
-    let out = run(&mut cmd, None)
-        .with_context(|| format!("could not run claude_cli {}", cfg.claude_cli.display()))?;
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    if !out.status.success() || !stdout.trim().starts_with("OK") {
-        bail!("publishing failed ({}): {}", out.status, reason(&out));
-    }
-
-    let url = match known_url {
-        Some(url) => url,
-        None => {
-            let url = parse_artifact_url(&stdout).ok_or_else(|| {
-                anyhow!(
-                    "the artifact was published but its URL was not in the reply (set artifact_url in the config or write it to {}): {}",
-                    url_file.display(),
-                    crate::exec::snippet(&stdout)
-                )
-            })?;
-            save_url(&url_file, &url)?;
-            url
+    let started = Instant::now();
+    let mut meetings = "unknown".to_string();
+    let mut exit_code = "not_run".to_string();
+    logging::info("publish", &format!("start init_page={always}"));
+    let result = (|| {
+        let sessions = sessions_with_meeting(&cfg.notes_dir)?;
+        let pending: Vec<&Session> = sessions.iter().filter(|s| s.pending).collect();
+        meetings = pending.len().to_string();
+        logging::info("publish", &format!("queue meetings={meetings}"));
+        if pending.is_empty() && !always {
+            exit_code = "skipped".to_string();
+            return Ok(());
         }
-    };
+        on_status(Status::Publishing {
+            meetings: pending.len(),
+        });
 
-    for session in &pending {
-        let marker = session.dir.join(PUBLISH_PENDING);
-        fs::remove_file(&marker).with_context(|| format!("removing {}", marker.display()))?;
+        let staging = Staging::create(&cfg.notes_dir)?;
+        let files = stage_files(&staging.path, &sessions)?;
+        let url_file = config_dir.join("meeting-notes").join(ARTIFACT_URL_FILE);
+        let known_url = known_url(cfg, &url_file);
+        let files_json = serde_json::to_string(&files)?;
+        let prompt = match &known_url {
+            Some(url) => update_prompt(url, &files_json),
+            None => create_prompt(&files_json),
+        };
+
+        let mut cmd = claude_command(cfg);
+        cmd.arg("-p")
+            .arg(&prompt)
+            .args(["--allowedTools", "Artifact"])
+            .env("CLAUDE_CODE_ARTIFACT", "1")
+            .current_dir(&staging.path);
+        let out = run(&mut cmd, None)
+            .with_context(|| format!("could not run claude_cli {}", cfg.claude_cli.display()))?;
+        exit_code = out
+            .status
+            .code()
+            .map_or_else(|| "signal".to_string(), |code| code.to_string());
+        logging::info(
+            "publish",
+            &format!("claude exit_code={exit_code} {}", reason(&out)),
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        if !out.status.success() || !stdout.trim().starts_with("OK") {
+            bail!("publishing failed ({}; {})", out.status, reason(&out));
+        }
+
+        let url = match known_url {
+            Some(url) => url,
+            None => {
+                let url = parse_artifact_url(&stdout).ok_or_else(|| {
+                    anyhow!(
+                        "the artifact was published but its URL was not in the reply (set artifact_url in the config or write it to {}; {})",
+                        url_file.display(),
+                        reason(&out)
+                    )
+                })?;
+                save_url(&url_file, &url)?;
+                url
+            }
+        };
+
+        for session in &pending {
+            let marker = session.dir.join(PUBLISH_PENDING);
+            fs::remove_file(&marker).with_context(|| format!("removing {}", marker.display()))?;
+        }
+        on_status(Status::Published { url });
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => {
+            logging::info(
+                "publish",
+                &format!(
+                    "end meetings={meetings} success=true exit_code={exit_code} duration_ms={}",
+                    started.elapsed().as_millis()
+                ),
+            );
+            Ok(())
+        }
+        Err(err) => {
+            logging::error(
+                "publish",
+                &format!(
+                    "end meetings={meetings} success=false exit_code={exit_code} duration_ms={} detail={err:#}",
+                    started.elapsed().as_millis()
+                ),
+            );
+            Err(err)
+        }
     }
-    on_status(Status::Published { url });
-    Ok(())
 }
 
 /// The first https://claude.ai/artifact/... URL in `text`.
