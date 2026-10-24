@@ -126,6 +126,32 @@ html, body {
 #app[data-view="recording"] #stop { background: var(--red); }
 .icon-btn.alert { box-shadow: 0 0 0 1.5px var(--red); }
 
+/* Notes queue badge on the My Meetings button. Hidden when nothing is queued. */
+#open-meetings { position: relative; }
+.badge {
+  position: absolute;
+  top: -5px;
+  right: -7px;
+  display: none;
+  align-items: center;
+  gap: 1px;
+  padding: 1px 3px;
+  border-radius: 8px;
+  background: var(--tab);
+  border: 1px solid rgba(217, 119, 87, 0.6);
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1;
+  pointer-events: none;
+}
+.badge[data-state="working"], .badge[data-state="error"] { display: flex; }
+.badge[data-state="error"] { border-color: var(--red); }
+.badge .spinner, .badge .count, .badge .bang { display: none; }
+.badge[data-state="working"] .spinner { display: block; }
+.badge[data-state="working"] .count:not(:empty) { display: block; }
+.badge[data-state="error"] .bang { display: block; font-size: 9px; }
+.badge .count { color: var(--orange); font-variant-numeric: tabular-nums; }
+
 /* Newer release. Hidden until the app emits mn-update. The column is 44px wide, so a long
    confirmation ellipsizes; the full sentence is the tooltip. */
 .update {
@@ -158,6 +184,6 @@ html, body {
 @keyframes spin { to { transform: rotate(360deg); } }
 
 @media (prefers-reduced-motion: reduce) {
-  .dot.rec, .spinner, .mini, .full { animation: none; }
+  .dot.rec, .spinner, .badge .spinner, .mini, .full { animation: none; }
   .bar i { transition: none; }
 }

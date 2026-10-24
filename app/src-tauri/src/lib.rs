@@ -1,11 +1,12 @@
 mod desktop_entry;
 mod meetings;
 mod notch;
+mod queue;
 mod runner;
 mod update;
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -27,8 +28,10 @@ use tauri_plugin_opener::OpenerExt;
 use notch::{Anchor, Edge, Rect, WidgetPrefs};
 use runner::RunState;
 
-/// The event the UI listens to. The payload is the core's `Status` as JSON.
+/// The recording, as the UI listens to it. The payload is the core's `Status` as JSON.
 const STATUS_EVENT: &str = "mn-status";
+/// The notes queue. Payload is `{ processing, waiting, last_error }` (see `QueueSnapshot`).
+const QUEUE_EVENT: &str = "mn-queue";
 /// A newer GitHub release. Payload is `{ version, prompt }`.
 const UPDATE_EVENT: &str = "mn-update";
 /// Tells the UI which edge the tab hangs from ("left" or "right") after a drop.
@@ -43,14 +46,16 @@ const RESIZE_SETTLE: Duration = Duration::from_millis(150);
 
 type Shared<'a> = State<'a, Arc<RunState>>;
 
-enum Job {
-    Record,
-    Process(PathBuf),
-}
-
 fn emit_status(app: &AppHandle, status: Status) {
     if let Err(e) = app.emit(STATUS_EVENT, &status) {
         eprintln!("could not send status to the window: {e}");
+    }
+}
+
+/// Tells the window how the notes queue stands. Never touches the recording status.
+fn emit_queue(app: &AppHandle, state: &RunState) {
+    if let Err(e) = app.emit(QUEUE_EVENT, state.queue.snapshot()) {
+        eprintln!("could not send the queue to the window: {e}");
     }
 }
 
@@ -59,38 +64,41 @@ fn describe(err: impl std::fmt::Display) -> String {
     format!("{err:#}")
 }
 
-fn run_job(app: &AppHandle, state: &RunState, job: Job) -> Result<(), String> {
+/// Records until Stop. Returns the session dir.
+fn record_session(app: &AppHandle, state: &RunState) -> Result<PathBuf, String> {
     let cfg = Config::load(None).map_err(describe)?;
-    let emit = |status: Status| emit_status(app, status);
-    let session = match job {
-        Job::Record => {
-            state.set_last_session(None);
-            state.set_recording(true);
-            let opts = RecordOptions {
-                max_seconds: None,
-                interrupt: Arc::clone(&state.interrupt),
-            };
-            let every = runner::remind_every();
-            let reminders = AtomicU64::new(0);
-            let on_status = |status: Status| {
-                if let Status::Recording { elapsed, .. } = &status {
-                    let sent = reminders.load(Ordering::SeqCst);
-                    if let Some(n) = runner::reminder_due(*elapsed, sent, every) {
-                        reminders.store(n, Ordering::SeqCst);
-                        remind_still_recording(app, *elapsed / 60);
-                    }
-                }
-                emit(status);
-            };
-            let recorded = mn_core::record(&cfg, &opts, on_status);
-            state.set_recording(false);
-            let dir = recorded.map_err(describe)?;
-            state.set_last_session(Some(dir.clone()));
-            dir
-        }
-        Job::Process(dir) => dir,
+    state.set_recording(true);
+    let opts = RecordOptions {
+        max_seconds: None,
+        interrupt: Arc::clone(&state.interrupt),
     };
-    mn_core::process(&cfg, &session, emit).map_err(describe)
+    let every = runner::remind_every();
+    let reminders = AtomicU64::new(0);
+    let on_status = |status: Status| {
+        if let Status::Recording { elapsed, .. } = &status {
+            let sent = reminders.load(Ordering::SeqCst);
+            if let Some(n) = runner::reminder_due(*elapsed, sent, every) {
+                reminders.store(n, Ordering::SeqCst);
+                remind_still_recording(app, *elapsed / 60);
+            }
+        }
+        emit_status(app, status);
+    };
+    let recorded = mn_core::record(&cfg, &opts, on_status);
+    state.set_recording(false);
+    recorded.map_err(describe)
+}
+
+/// Transcribes, summarizes and publishes one session. Each stage is shown through the queue.
+fn process_session(app: &AppHandle, state: &RunState, session: &Path) -> Result<(), String> {
+    let cfg = Config::load(None).map_err(describe)?;
+    let on_status = |status: Status| {
+        if let Some(label) = queue::stage_label(&status) {
+            state.queue.set_label(label);
+            emit_queue(app, state);
+        }
+    };
+    mn_core::process(&cfg, session, on_status).map_err(describe)
 }
 
 /// A system notification that the recording is still running. Failures are only logged; the
@@ -110,31 +118,80 @@ fn remind_still_recording(app: &AppHandle, minutes: u64) {
     }
 }
 
-/// Starts `job` on a background thread. Errors only if a run is already active.
-fn launch(app: &AppHandle, state: &Arc<RunState>, job: Job) -> Result<(), String> {
+/// Starts a recording on a background thread. Errors only if a recording is already active; notes
+/// being written for earlier meetings do not matter. When the recording stops, its session goes
+/// to the back of the notes queue and the slot is free at once.
+fn start_recording(app: &AppHandle, state: &Arc<RunState>) -> Result<(), String> {
     let guard = state.begin()?;
     let app = app.clone();
     let state = Arc::clone(state);
     thread::Builder::new()
         .name("mn-run".into())
         .spawn(move || {
-            let result = catch_unwind(AssertUnwindSafe(|| run_job(&app, &state, job)))
+            let result = catch_unwind(AssertUnwindSafe(|| record_session(&app, &state)))
                 .unwrap_or_else(|_| Err("The app hit an unexpected problem.".to_string()));
             state.set_recording(false);
-            // Free the slot before the final status, so "Try again" never races the guard.
-            drop(guard);
-            if let Err(message) = result {
-                eprintln!("error: {message}");
-                emit_status(&app, Status::Error { message });
+            match result {
+                Ok(session) => {
+                    state.queue.push(session);
+                    drop(guard);
+                    emit_queue(&app, &state);
+                }
+                Err(message) => {
+                    // Free the slot before the error status, so "Try again" never races the guard.
+                    drop(guard);
+                    eprintln!("error: {message}");
+                    emit_status(&app, Status::Error { message });
+                }
             }
         })
         .map(|_| ())
         .map_err(|e| format!("Could not start: {e}"))
 }
 
+/// The one thread that writes the notes: it takes queued sessions in order, one at a time. A
+/// failed session is kept for "Try again" and the next one still runs.
+fn spawn_queue_worker(app: AppHandle, state: Arc<RunState>) {
+    let built = thread::Builder::new()
+        .name("mn-queue".into())
+        .spawn(move || loop {
+            state.queue.wait_for_work();
+            state.queue.work_one(
+                |session| process_session(&app, &state, session),
+                || emit_queue(&app, &state),
+            );
+        });
+    if let Err(e) = built {
+        eprintln!("could not start the notes queue: {e}");
+    }
+}
+
+/// Queues the sessions an earlier run left unfinished (the app was closed, or the machine shut
+/// down, while the notes were being written).
+fn recover_unfinished(state: &RunState) {
+    let cfg = match Config::load(None) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            eprintln!("restart recovery: {}", describe(e));
+            return;
+        }
+    };
+    // Nothing is recording at launch, so there is no session to skip.
+    let sessions = queue::unfinished_sessions(&cfg.notes_dir, None);
+    if !sessions.is_empty() {
+        log(&format!(
+            "restart recovery: {} unfinished session(s)",
+            sessions.len()
+        ));
+    }
+    for session in sessions {
+        state.queue.push(session);
+    }
+}
+
 #[tauri::command]
 fn start(app: AppHandle, state: Shared<'_>) -> Result<(), String> {
-    launch(&app, &state, Job::Record)
+    start_recording(&app, &state)
 }
 
 #[tauri::command]
@@ -142,15 +199,21 @@ fn stop(state: Shared<'_>) -> Result<(), String> {
     state.request_stop()
 }
 
-/// Runs the pipeline again on the last session. If the recording itself failed there is no
-/// session yet, so this starts a fresh recording instead.
+/// "Try again": queues the sessions whose notes failed. If none failed, the recording itself
+/// failed, so this starts a fresh recording instead.
 #[tauri::command]
 fn retry(app: AppHandle, state: Shared<'_>) -> Result<(), String> {
-    let job = match state.last_session() {
-        Some(dir) => Job::Process(dir),
-        None => Job::Record,
-    };
-    launch(&app, &state, job)
+    if state.queue.retry_failed() > 0 {
+        emit_queue(&app, &state);
+        return Ok(());
+    }
+    start_recording(&app, &state)
+}
+
+/// The queue as it is now, for a window that loaded after the last `mn-queue` event.
+#[tauri::command]
+fn queue_status(state: Shared<'_>) -> queue::QueueSnapshot {
+    state.queue.snapshot()
 }
 
 #[tauri::command]
@@ -573,14 +636,14 @@ fn toggle_window(app: &AppHandle) {
     }
 }
 
-/// Ctrl+Alt+R: stops a recording, or starts one when nothing is running. While the notes are
-/// being written nothing happens, so a stray press cannot start a second run.
+/// Ctrl+Alt+R: stops a recording, or starts one when nothing is recording (notes being written
+/// for an earlier meeting do not matter).
 fn toggle_recording(app: &AppHandle) {
     let state = Arc::clone(&*app.state::<Arc<RunState>>());
     if state.request_stop().is_ok() {
         return;
     }
-    if let Err(e) = launch(app, &state, Job::Record) {
+    if let Err(e) = start_recording(app, &state) {
         eprintln!("record hotkey: {e}");
     }
 }
@@ -699,7 +762,10 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
             "quit" => {
                 let app = app.clone();
                 let state = Arc::clone(&*app.state::<Arc<RunState>>());
-                // Close the WAV files first, off the UI thread.
+                // Close the WAV files first, off the UI thread. Notes being written are not
+                // waited for: the app just exits, and the next launch finds the sessions that
+                // have audio or a transcript but no card.json and queues them again
+                // (`recover_unfinished`).
                 thread::spawn(move || {
                     state.stop_recording_and_wait(Duration::from_secs(3));
                     app.exit(0);
@@ -871,6 +937,7 @@ pub fn run() {
             start,
             stop,
             retry,
+            queue_status,
             open_meetings,
             set_size,
             current_edge,
@@ -893,6 +960,9 @@ pub fn run() {
             build_tray(handle)?;
             spawn_update_check(handle.clone());
             register_hotkeys(handle);
+            let run_state = Arc::clone(&*handle.state::<Arc<RunState>>());
+            recover_unfinished(&run_state);
+            spawn_queue_worker(handle.clone(), run_state);
             if selftest_on() {
                 // No keyboard in the self-test: press "Ctrl+Alt+M" on a timer instead.
                 let handle = handle.clone();

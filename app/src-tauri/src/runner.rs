@@ -1,20 +1,22 @@
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// What the widget is doing right now. One run (record + process, or a retry) at a time.
+use crate::queue::JobQueue;
+
+/// What the widget is doing right now. One recording at a time; writing the notes for finished
+/// recordings runs on its own, in `queue`.
 #[derive(Default)]
 pub struct RunState {
     active: Arc<AtomicBool>,
     recording: AtomicBool,
     /// Passed to `mn_core::record`; setting it stops the recording.
     pub interrupt: Arc<AtomicBool>,
-    last_session: Mutex<Option<PathBuf>>,
+    pub queue: JobQueue,
 }
 
-/// Held for the whole run; dropping it frees the slot for the next `start`.
+/// Held for the whole recording; dropping it frees the slot for the next `start`.
 pub struct RunGuard {
     active: Arc<AtomicBool>,
 }
@@ -26,11 +28,12 @@ impl Drop for RunGuard {
 }
 
 impl RunState {
-    /// Claims the single run slot. Errors if a run is already active.
+    /// Claims the recording slot. Errors if a recording is already active. Processing does not
+    /// hold this slot.
     pub fn begin(&self) -> Result<RunGuard, String> {
         self.active
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .map_err(|_| "Already running".to_string())?;
+            .map_err(|_| "Already recording".to_string())?;
         self.interrupt.store(false, Ordering::SeqCst);
         Ok(RunGuard {
             active: Arc::clone(&self.active),
@@ -63,16 +66,6 @@ impl RunState {
         let deadline = Instant::now() + timeout;
         while self.recording.load(Ordering::SeqCst) && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(50));
-        }
-    }
-
-    pub fn last_session(&self) -> Option<PathBuf> {
-        self.last_session.lock().ok().and_then(|s| s.clone())
-    }
-
-    pub fn set_last_session(&self, dir: Option<PathBuf>) {
-        if let Ok(mut s) = self.last_session.lock() {
-            *s = dir;
         }
     }
 }
@@ -118,7 +111,7 @@ mod tests {
         let state = RunState::default();
         let guard = state.begin().unwrap();
         assert!(state.is_active());
-        assert_eq!(state.begin().err().as_deref(), Some("Already running"));
+        assert_eq!(state.begin().err().as_deref(), Some("Already recording"));
         drop(guard);
         assert!(!state.is_active());
         assert!(state.begin().is_ok());
@@ -141,18 +134,5 @@ mod tests {
         state.set_recording(true);
         assert!(state.request_stop().is_ok());
         assert!(state.interrupt.load(Ordering::SeqCst));
-    }
-
-    #[test]
-    fn last_session_round_trips() {
-        let state = RunState::default();
-        assert_eq!(state.last_session(), None);
-        state.set_last_session(Some(PathBuf::from("/notes/2026-10-22_0900")));
-        assert_eq!(
-            state.last_session(),
-            Some(PathBuf::from("/notes/2026-10-22_0900"))
-        );
-        state.set_last_session(None);
-        assert_eq!(state.last_session(), None);
     }
 }

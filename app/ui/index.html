@@ -62,6 +62,13 @@
       </button>
       <button id="open-meetings" class="icon-btn small" type="button" title="Open My Meetings" aria-label="Open My Meetings">
         <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M5 7h14M5 12h14M5 17h9" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+        <!-- Notes queue: a spinner (and how many wait) while notes are written, "!" if they failed.
+             It sits on the corner of this button, so the record controls never move. -->
+        <span id="queue-badge" class="badge" data-state="idle" aria-hidden="true">
+          <svg class="spinner" viewBox="0 0 24 24" width="10" height="10"><use href="#starburst"/></svg>
+          <span id="queue-count" class="count"></span>
+          <span class="bang">!</span>
+        </span>
       </button>
       <button id="update" class="update" type="button" hidden>Update</button>
     </div>
