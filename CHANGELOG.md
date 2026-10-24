@@ -3,6 +3,21 @@
 Newest first. "What's new for you" is read by Claude to tell project managers what changed after an update, so keep it plain.
 "Technical" is for developers. `scripts/release.sh` needs a `## vX.Y.Z` heading here before it makes a release, and replaces `unreleased` with the date.
 
+## v0.1.10 - unreleased
+
+### What's new for you
+- When something goes wrong, the widget now tells you in plain words what happened and what to do, with **Try again** and **Report a problem** buttons, and you get a notification.
+- If the microphone was blocked, you now see "No sound was recorded" with a quick sound test, instead of an empty note.
+- **Notes ready**: you see which meeting is done and can open My Meetings in one click.
+- **Report a problem** (tray menu or any error) puts one file on your Desktop. Send it to Mustafa in Teams. It never contains your meeting notes.
+- My Meetings shows a clear message and **Try again** when it cannot load, and Ask MM explains errors instead of disappearing.
+
+### Technical
+- Shared rotating log `meeting-notes.log` (macOS ~/Library/Logs/MeetingNotes, Windows %LOCALAPPDATA%\MeetingNotes\logs, Linux ~/.cache/meeting-notes), scrubbed, no meeting content; `mn report` zip.
+- Typed errors (kind, stage, plain message, hint) in `Status::Error`; Claude/Codex stdout no longer copied into errors.
+- Widget message card beside the column (window grows to 300 px), notifications, tray Report a problem / Open log folder; failed recordings get `RECORDING_FAILED`.
+- Widget column 212 px; full errors in the log; page version in the My Meetings footer.
+
 ## v0.1.9 - 2026-10-24
 
 ### What's new for you

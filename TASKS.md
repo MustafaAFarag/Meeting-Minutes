@@ -69,7 +69,7 @@ The pilot PM (Mac) uses it on 5 real meetings in 1 week. Each card is correct (r
   - [x] 12a. `scripts/setup/update.sh` + `update.ps1`: fetch, newest tag, setup --update, mn doctor, rollback; status in `update-status.json` (worker)
   - [x] 12b. App: button shows the newest version, refuses while recording or writing notes, runs the updater detached, reports the result after restart (worker)
   - [x] 12c. Released as v0.1.9 on 2026-10-24 (v0.1.8 was tagged but its Windows test failed, so it has no release)
-- [ ] 13. Clear loading / error / success states + logs a PM can send (asked 2026-10-24)
+- [x] 13. Clear loading / error / success states + logs a PM can send (asked 2026-10-24)
   - Done when: every failure a PM can hit shows a plain-English reason and a next action on the widget (no tooltip-only errors) plus a notification; every failure is in a log with the full technical reason; "Report a problem" makes one zip on the Desktop the PM can send in Teams
   - Decisions: logs never contain meeting content (no titles, names, transcript or card text, no Claude answers); report = zip on the Desktop (logs, versions, mn doctor, config without secrets); errors are loud (visible red state + notification)
   - [x] 13a. Audit of states and logging gaps (top gaps: denied mic ends as "notes ready"; errors are tooltip-only technical text; core logs nothing; Claude stdout snippets can carry meeting text into logs)
