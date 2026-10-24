@@ -21,7 +21,7 @@ pub use native_capture::{run_capture, CaptureSource};
 pub use pipeline::process;
 pub use publish::publish;
 pub use record::{record, RecordOptions};
-pub use report::create_report;
+pub use report::{create_report, create_report_in, ReportDirs};
 pub use status::Status;
 pub use summarize::summarize;
 pub use transcribe::transcribe;

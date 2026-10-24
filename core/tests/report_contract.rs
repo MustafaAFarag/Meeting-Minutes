@@ -4,7 +4,7 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use mn_core::{create_report, Config};
+use mn_core::{create_report_in, Config, ReportDirs};
 use zip::ZipArchive;
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -102,7 +102,13 @@ fn report_contains_only_diagnostics_and_redacts_config_paths() {
     let config_path = config_dir.join("config.toml");
     fs::write(&config_path, cfg.to_toml().unwrap()).unwrap();
 
-    let report = create_report(Some(&config_path)).unwrap();
+    let folders = ReportDirs {
+        output: desktop.clone(),
+        config: config_home.clone(),
+        cache: cache_home.clone(),
+        logs: log_dir.clone(),
+    };
+    let report = create_report_in(&folders, Some(&config_path)).unwrap();
     assert!(report.starts_with(&desktop), "{}", report.display());
     assert!(report
         .file_name()
@@ -190,19 +196,20 @@ fn report_config_lists_effective_fields_when_optional_values_are_unset() {
     for dir in [&desktop, &config_home, &cache_home, &log_dir] {
         fs::create_dir_all(dir).unwrap();
     }
-    let _env = EnvGuard::set(&[
-        ("HOME", home),
-        ("XDG_CONFIG_HOME", config_home.clone()),
-        ("XDG_CACHE_HOME", cache_home),
-        ("MN_LOG_DIR", log_dir),
-    ]);
-    fs::write(
-        config_home.join("user-dirs.dirs"),
-        "XDG_DESKTOP_DIR=\"$HOME/Desktop\"\n",
-    )
-    .unwrap();
+    let _env = EnvGuard::set(&[("HOME", home)]);
+    // An empty config file: every optional value is unset.
+    let config_dir = config_home.join("meeting-notes");
+    fs::create_dir_all(&config_dir).unwrap();
+    let config_path = config_dir.join("config.toml");
+    fs::write(&config_path, "").unwrap();
+    let folders = ReportDirs {
+        output: desktop,
+        config: config_home,
+        cache: cache_home,
+        logs: log_dir,
+    };
 
-    let report = create_report(None).unwrap();
+    let report = create_report_in(&folders, Some(&config_path)).unwrap();
     let file = fs::File::open(report).unwrap();
     let mut archive = ZipArchive::new(file).unwrap();
     let mut config = String::new();

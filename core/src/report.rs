@@ -13,31 +13,59 @@ use crate::doctor::diagnose;
 use crate::logging::{log_dir, session_name};
 use crate::publish::known_url;
 
+/// The folders a report reads from and writes to. Tests pass temp folders, because macOS and
+/// Windows ignore the XDG variables that would redirect `dirs` on Linux.
+pub struct ReportDirs {
+    /// Where the zip goes (the Desktop, or the home folder when there is none).
+    pub output: PathBuf,
+    /// The OS config folder (holds `meeting-notes/`).
+    pub config: PathBuf,
+    /// The OS cache folder (holds `meeting-notes/widget.log`).
+    pub cache: PathBuf,
+    /// The shared log folder.
+    pub logs: PathBuf,
+}
+
+impl ReportDirs {
+    /// This computer's folders.
+    pub fn for_this_machine() -> Result<Self> {
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+        let output = dirs::desktop_dir()
+            .filter(|path| fs::create_dir_all(path).is_ok())
+            .or_else(|| Some(home.clone()).filter(|path| fs::create_dir_all(path).is_ok()))
+            .context("could not create a report folder on the Desktop or in the home folder")?;
+        Ok(ReportDirs {
+            output,
+            config: dirs::config_dir().unwrap_or_else(|| home.join(".config")),
+            cache: dirs::cache_dir().unwrap_or_else(|| home.join(".cache")),
+            logs: log_dir(),
+        })
+    }
+}
+
 /// Creates a diagnostics archive on the Desktop, falling back to the home folder.
 pub fn create_report(config_path: Option<&Path>) -> Result<PathBuf> {
-    let desktop = dirs::desktop_dir().filter(|path| fs::create_dir_all(path).is_ok());
-    let output_dir = desktop
-        .or_else(|| dirs::home_dir().filter(|path| fs::create_dir_all(path).is_ok()))
-        .context("could not create a report folder on the Desktop or in the home folder")?;
+    create_report_in(&ReportDirs::for_this_machine()?, config_path)
+}
+
+/// Creates the archive in `folders.output`, reading logs and settings from `folders`.
+pub fn create_report_in(folders: &ReportDirs, config_path: Option<&Path>) -> Result<PathBuf> {
     let name = format!(
         "MeetingNotes-report-{}.zip",
         Local::now().format("%Y-%m-%d_%H%M")
     );
-    let output = output_dir.join(name);
-    create_report_at(config_path, &output, &log_dir())?;
+    let output = folders.output.join(name);
+    create_report_at(config_path, &output, folders)?;
     Ok(output)
 }
 
-fn create_report_at(config_path: Option<&Path>, output: &Path, log_folder: &Path) -> Result<()> {
+fn create_report_at(config_path: Option<&Path>, output: &Path, folders: &ReportDirs) -> Result<()> {
+    let log_folder = &folders.logs;
     let mut cfg = Config::load(config_path).unwrap_or_default();
     let config_path = config_path
         .map(Path::to_path_buf)
         .or_else(|| Config::default_path().ok());
-    let config_dir = dirs::config_dir().unwrap_or_else(|| {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".config")
-    });
+    let config_dir = folders.config.clone();
     let url_file = config_dir.join("meeting-notes").join("artifact_url.txt");
     if cfg.artifact_url.is_none() {
         cfg.artifact_url = known_url(&cfg, &url_file);
@@ -54,11 +82,7 @@ fn create_report_at(config_path: Option<&Path>, output: &Path, log_folder: &Path
     ] {
         add_log_if_present(&mut zip, options, log_folder.join(name), name)?;
     }
-    let cache_dir = dirs::cache_dir().unwrap_or_else(|| {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".cache")
-    });
+    let cache_dir = folders.cache.clone();
     add_log_if_present(
         &mut zip,
         options,
@@ -66,11 +90,6 @@ fn create_report_at(config_path: Option<&Path>, output: &Path, log_folder: &Path
         "widget.log",
     )?;
 
-    let config_dir = dirs::config_dir().unwrap_or_else(|| {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".config")
-    });
     let update_dir = config_dir.join("meeting-notes");
     add_log_if_present(
         &mut zip,
