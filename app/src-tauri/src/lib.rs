@@ -99,7 +99,15 @@ fn process_session(app: &AppHandle, state: &RunState, session: &Path) -> Result<
             emit_queue(app, state);
         }
     };
-    mn_core::process(&cfg, session, on_status).map_err(describe)
+    let result = mn_core::process(&cfg, session, on_status).map_err(describe);
+    // The widget only shows the start of the error, so the full text goes to widget.log.
+    if let Err(message) = &result {
+        log(&format!(
+            "notes failed for {}: {message}",
+            session.display()
+        ));
+    }
+    result
 }
 
 /// A system notification that the recording is still running. Failures are only logged; the
@@ -144,7 +152,7 @@ fn start_recording(app: &AppHandle, state: &Arc<RunState>) -> Result<(), String>
                 Err(message) => {
                     // Free the slot before the error status, so "Try again" never races the guard.
                     drop(guard);
-                    eprintln!("error: {message}");
+                    log(&format!("recording failed: {message}"));
                     emit_status(&app, Status::Error { message });
                 }
             }
