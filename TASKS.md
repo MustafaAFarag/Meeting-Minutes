@@ -58,6 +58,12 @@ The pilot PM (Mac) uses it on 5 real meetings in 1 week. Each card is correct (r
   - [x] 10e. Setup scripts install git + Claude Code + `claude auth login`, `--update` flag, desktop/menu icons; `UPDATE.md`, `CHANGELOG.md`, `.claude/settings.json` allowlist, `scripts/release.sh`
   - [x] 10f. Cleaned history force-pushed (main, v0.1.4, v0.1.5 have no client names). v0.1.6 released 2026-10-24 (CI green, 7 files, marked Latest)
   - [ ] 10g. Real-machine test on Mac and Windows: install from the README sentence, count prompts, update v0.1.6 to a test v0.1.7, reopen from the Dock/Desktop icon, reboot. Untested so far: windows.ps1 in PowerShell 5.1 (no pwsh here), Xcode-tools flow, `claude auth login` from the agent shell, Dock tile, Desktop .lnk, the 404 "still being prepared" path, whether Desktop honours the repo and user permission rules
+- [ ] 11. v0.1.7: back-to-back meetings and better outputs (asked 2026-10-24)
+  - [x] 11a. The card uses Opus 5.5 at medium effort (config `card_model`, `card_effort`)
+  - [ ] 11b. Processing queue: Start works while the last meeting is still processing; a FIFO worker processes sessions in order; unfinished sessions resume after a restart (worker)
+  - [ ] 11c. One recording with back-to-back meetings is split into one card per meeting (`<session>-2` dirs), using the calendar and the transcript (worker)
+  - [ ] 11d. Ask MM buttons: "Email summary (Nat version)" and "Project kickoff (Eman style)". Waiting for one example of each from the user
+  - [ ] 11e. Release v0.1.7 and republish the page
 
 ## Decisions
 - Capture interface: each capture source is a process that writes raw s16le 16 kHz mono PCM to stdout. On Linux this is `pw-record`; on Mac it will be a Swift sidecar. The Rust core reads the stream, measures levels, writes WAV, and auto-stops after silence.
