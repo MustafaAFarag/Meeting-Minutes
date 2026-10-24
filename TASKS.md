@@ -73,7 +73,7 @@ The pilot PM (Mac) uses it on 5 real meetings in 1 week. Each card is correct (r
   - Done when: every failure a PM can hit shows a plain-English reason and a next action on the widget (no tooltip-only errors) plus a notification; every failure is in a log with the full technical reason; "Report a problem" makes one zip on the Desktop the PM can send in Teams
   - Decisions: logs never contain meeting content (no titles, names, transcript or card text, no Claude answers); report = zip on the Desktop (logs, versions, mn doctor, config without secrets); errors are loud (visible red state + notification)
   - [x] 13a. Audit of states and logging gaps (top gaps: denied mic ends as "notes ready"; errors are tooltip-only technical text; core logs nothing; Claude stdout snippets can carry meeting text into logs)
-  - [ ] 13b. Core: shared rotating log (`meeting-notes.log`), error kinds with plain message + hint, stage logging, no-sound detection, `mn report` zip (worker)
+  - [x] 13b. Core: shared rotating log (`meeting-notes.log`), error kinds with plain message + hint, stage logging, no-sound detection, `mn report` zip (worker; committed on branch feat/core-logging-errors, merged together with 13d because the app needs the new Status::Error fields)
   - [x] 13c. My Meetings page: skeleton, load-failure and refresh-failure states, Ask MM inline errors (not_granted no longer hides the panel), docx failure causes, page version line (worker)
   - [ ] 13d. Widget: visible error/success card with Try again + Report a problem, stage progress, notifications, hotkey and update-timeout failures surfaced, tray "Report a problem" + "Open log folder" (after 13b)
 
