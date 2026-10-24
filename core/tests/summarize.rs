@@ -89,6 +89,36 @@ fn m365_sections_are_copied_verbatim_from_the_doc() {
 }
 
 #[test]
+fn card_schema_is_codex_compatible_at_every_object_level() {
+    fn check(node: &Value) {
+        if let Some(properties) = node.get("properties").and_then(Value::as_object) {
+            assert_eq!(node.get("additionalProperties"), Some(&json!(false)));
+            let expected = properties
+                .keys()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>();
+            let required = node
+                .get("required")
+                .and_then(Value::as_array)
+                .expect("object schemas require every property")
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(required, expected);
+            for property in properties.values() {
+                check(property);
+            }
+        }
+        if let Some(items) = node.get("items") {
+            check(items);
+        }
+    }
+
+    check(&serde_json::from_str::<Value>(SCHEMA).unwrap());
+}
+
+#[test]
 fn prompt_has_every_placeholder_filled() {
     let fx = Fixture::new();
     let session = fx.session();
@@ -148,6 +178,24 @@ fn claude_success_writes_card_meeting_and_marker() {
     obj.insert("generated_at".into(), json!(generated_at));
     assert_eq!(meeting, expected);
     assert!(session.join(PUBLISH_PENDING).exists());
+    let names = fs::read_dir(&session)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        names,
+        [
+            "PUBLISH_PENDING",
+            "card.json",
+            "meeting.json",
+            "session.json",
+            "transcript.md",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+    );
+    assert!(!session.join("transcript.full.md").exists());
 
     assert_eq!(
         statuses,
@@ -156,6 +204,121 @@ fn claude_success_writes_card_meeting_and_marker() {
             json!({"state": "summarized", "engine": "claude", "card": card_path}),
         ]
     );
+}
+
+#[test]
+fn claude_two_meetings_write_separate_cards_sessions_and_transcript_slices() {
+    let _guard = lock();
+    let fx = Fixture::new();
+    let session = fx.session();
+    let transcript = concat!(
+        "# Transcript 2026-03-04 10:00–10:47\n\n",
+        "<!-- SYNTHETIC split-meeting test. -->\n",
+        "[00:00:01] **Me:** First meeting starts.\n",
+        "[00:10:54] **Them:** First meeting ends.\n",
+        "[00:20:00] **Me:** Second meeting starts.\n",
+        "[00:47:39] **Them:** Second meeting ends.\n",
+    );
+    fs::write(session.join("transcript.md"), transcript).unwrap();
+
+    let mut first = sample_card();
+    first["title"] = json!("Acme planning");
+    let mut second = sample_card();
+    second["title"] = json!("Acme review");
+    let output = meeting_response(&[
+        (first.clone(), "00:00:00", "00:10:54"),
+        (second.clone(), "00:20:00", "00:47:40"),
+    ]);
+    let claude = fx.fake("claude", 0, &claude_ok_output_for(&output), None);
+    let cfg = fx.cfg(&claude, None);
+
+    summarize(&cfg, &session, |_| {}).unwrap();
+
+    let sibling = fx.notes().join("2026-03-04_1000-2");
+    assert_eq!(read_json(&session.join("card.json")), first);
+    assert_eq!(read_json(&sibling.join("card.json")), second);
+    assert_eq!(
+        fs::read_to_string(session.join("transcript.full.md")).unwrap(),
+        transcript
+    );
+    assert_eq!(
+        fs::read_to_string(session.join("transcript.md")).unwrap(),
+        concat!(
+            "# Transcript 2026-03-04 10:00–10:47\n\n",
+            "<!-- SYNTHETIC split-meeting test. -->\n",
+            "[00:00:01] **Me:** First meeting starts.\n",
+            "[00:10:54] **Them:** First meeting ends.\n",
+        )
+    );
+    assert_eq!(
+        fs::read_to_string(sibling.join("transcript.md")).unwrap(),
+        concat!(
+            "# Transcript 2026-03-04 10:00–10:47\n\n",
+            "<!-- SYNTHETIC split-meeting test. -->\n",
+            "[00:20:00] **Me:** Second meeting starts.\n",
+            "[00:47:39] **Them:** Second meeting ends.\n",
+        )
+    );
+    assert_eq!(
+        SessionInfo::load(&sibling).unwrap().unwrap().started_at,
+        "2026-03-04T10:20:00+02:00"
+    );
+    let sibling_info = SessionInfo::load(&sibling).unwrap().unwrap();
+    assert_eq!(sibling_info.ended_at, "2026-03-04T10:47:40+02:00");
+    assert_eq!(
+        (sibling_info.seconds.me, sibling_info.seconds.them),
+        (1660.0, 1660.0)
+    );
+    assert_eq!(
+        read_json(&session.join("meeting.json"))["title"],
+        "Acme planning"
+    );
+    assert_eq!(
+        read_json(&sibling.join("meeting.json"))["title"],
+        "Acme review"
+    );
+    for dir in [&session, &sibling] {
+        assert!(dir.join(PUBLISH_PENDING).exists());
+        assert!(dir.join("meeting.json").exists());
+    }
+    summarize(&cfg, &session, |_| {}).unwrap();
+    assert_eq!(claude.call_count(), 1);
+    assert!(!fx.notes().join("2026-03-04_1000-3").exists());
+}
+
+#[test]
+fn codex_fallback_splits_two_meetings_through_the_same_writer() {
+    let _guard = lock();
+    let fx = Fixture::new();
+    let session = fx.session();
+    fs::write(
+        session.join("transcript.md"),
+        "# Transcript\n\n[00:00:01] **Me:** Acme planning.\n[00:20:00] **Me:** Acme review.\n",
+    )
+    .unwrap();
+    let mut first = sample_card();
+    first["title"] = json!("Acme planning");
+    let mut second = sample_card();
+    second["title"] = json!("Acme review");
+    let output = meeting_response(&[
+        (first.clone(), "00:00:00", "00:10:54"),
+        (second.clone(), "00:20:00", "00:47:40"),
+    ]);
+    let claude = fx.fake("claude", 1, "quota reached", None);
+    let codex = fx.fake("codex", 0, "progress", Some(&output.to_string()));
+    let cfg = fx.cfg(&claude, Some(&codex));
+
+    summarize(&cfg, &session, |_| {}).unwrap();
+
+    let sibling = fx.notes().join("2026-03-04_1000-2");
+    assert_eq!(read_json(&session.join("card.json")), first);
+    assert_eq!(read_json(&sibling.join("card.json")), second);
+    assert_eq!(
+        read_json(&sibling.join("meeting.json"))["generated_by"],
+        "codex"
+    );
+    assert!(session.join(PUBLISH_PENDING).exists());
+    assert!(sibling.join(PUBLISH_PENDING).exists());
 }
 
 #[test]
@@ -252,7 +415,13 @@ fn claude_failures_fall_back_to_codex() {
         let claude = fx.fake("claude", exit, &stdout, None);
         let mut codex_card = sample_card();
         codex_card["title"] = json!("From codex");
-        let codex = fx.fake("codex", 0, "progress noise", Some(&codex_card.to_string()));
+        let codex_output = meeting_response(&[(codex_card.clone(), "00:00:00", "00:47:40")]);
+        let codex = fx.fake(
+            "codex",
+            0,
+            "progress noise",
+            Some(&codex_output.to_string()),
+        );
         let cfg = fx.cfg(&claude, Some(&codex));
 
         let (result, statuses) = statuses_of(|on| summarize(&cfg, &session, on));

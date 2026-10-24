@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use common::*;
 use mn_core::publish::{parse_artifact_url, publish_with_config_dir};
-use mn_core::summarize::PUBLISH_PENDING;
+use mn_core::summarize::{summarize, PUBLISH_PENDING};
 use mn_core::{Config, Status};
 use serde_json::{json, Value};
 
@@ -203,6 +203,63 @@ fn staging_dir_has_the_page_the_index_and_only_the_pending_meetings() {
             json!({"state": "published", "url": URL}),
         ]
     );
+}
+
+#[test]
+fn split_summary_publishes_both_meeting_cards_and_transcripts() {
+    let _guard = lock();
+    let fx = Fixture::new();
+    let session = make_session(&fx.notes(), "2026-03-04_1000", STARTED, ENDED);
+    fs::write(
+        session.join("transcript.md"),
+        concat!(
+            "# Transcript\n\n",
+            "[00:00:01] **Me:** Acme planning.\n",
+            "[00:20:00] **Me:** Acme review.\n",
+        ),
+    )
+    .unwrap();
+    let mut first = sample_card();
+    first["title"] = json!("Acme planning");
+    let mut second = sample_card();
+    second["title"] = json!("Acme review");
+    let output = meeting_response(&[
+        (first, "00:00:00", "00:10:54"),
+        (second, "00:20:00", "00:47:40"),
+    ]);
+    let claude = fx
+        .fake(0, &claude_ok_output_for(&output))
+        .with_alt_stdout("OK data/index.json");
+    let cfg = Config {
+        artifact_url: Some(URL.to_string()),
+        ..fx.cfg(&claude)
+    };
+
+    summarize(&cfg, &session, |_| {}).unwrap();
+    let (result, statuses) = run(&cfg, &fx.config_dir());
+    result.unwrap();
+
+    assert_eq!(claude.call_count(), 2);
+    let call = claude.call(2);
+    let staged = &call.cwd_copy;
+    for id in ["2026-03-04_1000", "2026-03-04_1000-2"] {
+        assert!(
+            staged.join(format!("data/meetings/{id}.json")).exists(),
+            "{id}"
+        );
+        assert!(
+            staged.join(format!("data/transcripts/{id}.md")).exists(),
+            "{id}"
+        );
+        assert!(!fx.notes().join(id).join(PUBLISH_PENDING).exists(), "{id}");
+    }
+    let files = files_map(prompt_of(&call));
+    assert_eq!(files.as_object().unwrap().len(), 5);
+    assert!(files.get("data/meetings/2026-03-04_1000.json").is_some());
+    assert!(files.get("data/transcripts/2026-03-04_1000.md").is_some());
+    assert!(files.get("data/meetings/2026-03-04_1000-2.json").is_some());
+    assert!(files.get("data/transcripts/2026-03-04_1000-2.md").is_some());
+    assert_eq!(statuses[0], json!({"state": "publishing", "meetings": 2}));
 }
 
 #[test]

@@ -129,16 +129,34 @@ pub fn sample_card() -> Value {
 }
 
 pub fn claude_ok_output(card: &Value) -> String {
+    claude_ok_output_for(&meeting_response(&[(card.clone(), "00:00:00", "00:47:40")]))
+}
+
+pub fn claude_ok_output_for(output: &Value) -> String {
     json!({
         "type": "result",
         "subtype": "success",
         "is_error": false,
         "result": "",
-        "structured_output": card,
+        "structured_output": output,
         "num_turns": 3,
         "total_cost_usd": 0.12
     })
     .to_string()
+}
+
+/// Builds the model's wrapper while keeping each fixture card complete.
+pub fn meeting_response(meetings: &[(Value, &str, &str)]) -> Value {
+    let meetings = meetings
+        .iter()
+        .map(|(card, start, end)| {
+            let mut card = card.clone();
+            card["transcript_start"] = json!(start);
+            card["transcript_end"] = json!(end);
+            card
+        })
+        .collect::<Vec<_>>();
+    json!({ "meetings": meetings })
 }
 
 /// `<notes>/<name>` with session.json and a transcript.md.
