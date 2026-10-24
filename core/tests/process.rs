@@ -17,6 +17,7 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        common::use_test_log_dir();
         Fixture {
             dir: tempfile::tempdir().unwrap(),
         }

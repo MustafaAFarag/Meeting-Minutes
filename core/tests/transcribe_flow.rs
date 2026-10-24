@@ -2,14 +2,17 @@
 #![cfg(unix)]
 
 use std::cell::RefCell;
+use std::env;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+mod common;
+
 use mn_core::capture::Track;
 use mn_core::session::{SessionInfo, StopReason, TrackSeconds};
-use mn_core::{transcribe, Config, Status};
+use mn_core::{transcribe, Config, ErrorKind, Failure, Status};
 
 // Writing an executable while another test forks can give ETXTBSY; run these one at a time.
 static LOCK: Mutex<()> = Mutex::new(());
@@ -118,6 +121,7 @@ fn fixture_with(me: &[i16], them: &[i16]) -> Fixture {
 }
 
 fn run(fx: &Fixture, cfg: &Config) -> (anyhow::Result<PathBuf>, Vec<Status>) {
+    common::use_test_log_dir();
     let statuses = RefCell::new(Vec::new());
     let result = transcribe(cfg, &fx.session(), |s| statuses.borrow_mut().push(s));
     (result, statuses.into_inner())
@@ -264,12 +268,26 @@ fn quiet_speaker_in_a_long_file_is_still_transcribed() {
 #[test]
 fn track_with_no_window_above_the_threshold_is_skipped() {
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let logs = tempfile::tempdir().unwrap();
+    common::use_test_log_dir();
+    let old_log_dir = env::var_os("MN_LOG_DIR");
+    env::set_var("MN_LOG_DIR", logs.path());
     // +-100 square wave is -50.3 dBFS: every window is just under -50
     let me = square_then_silence(100, 16_000, 1);
     let fx = fixture_with(&me, &audio(true));
     let cfg = fx.config(&fx.copying_whisper());
 
     run(&fx, &cfg).0.unwrap();
+
+    let log = fs::read_to_string(logs.path().join("meeting-notes.log")).unwrap();
+    assert!(
+        log.contains("WARN  [transcribe] track=me silent; skipping"),
+        "{log}"
+    );
+    match old_log_dir {
+        Some(value) => env::set_var("MN_LOG_DIR", value),
+        None => env::remove_var("MN_LOG_DIR"),
+    }
 
     let calls = fx.calls();
     assert_eq!(calls.len(), 1);
@@ -322,17 +340,21 @@ fn unparseable_whisper_output_keeps_audio() {
 }
 
 #[test]
-fn all_silent_session_gets_header_only_transcript() {
+fn all_silent_session_fails_with_no_sound_and_keeps_audio() {
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let fx = fixture(false, false);
     let cfg = fx.config(&fx.copying_whisper());
 
     let (result, _) = run(&fx, &cfg);
-    let md = fs::read_to_string(result.unwrap()).unwrap();
-
-    assert_eq!(md, "# Transcript 2026-10-22 10:49–11:32\n");
+    let err = result.unwrap_err();
+    assert_eq!(
+        err.downcast_ref::<Failure>().map(|failure| failure.kind),
+        Some(ErrorKind::NoSound),
+        "{err:#}"
+    );
     assert!(fx.calls().is_empty());
-    assert!(!fx.session().join("me.wav").exists());
+    assert!(fx.session().join("me.wav").exists());
+    assert!(fx.session().join("them.wav").exists());
 }
 
 #[test]

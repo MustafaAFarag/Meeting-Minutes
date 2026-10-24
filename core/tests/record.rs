@@ -6,10 +6,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::Ordering;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+mod common;
+
 use mn_core::session::{SessionInfo, StopReason};
-use mn_core::{record, Config, RecordOptions, Status};
+use mn_core::{record, Config, ErrorKind, Failure, RecordOptions, Status};
 
 /// 0.5 s of digital silence, then 1 s of non-zero PCM (every byte 0x40), then stay alive without
 /// output.
@@ -18,6 +21,27 @@ const LOUD_THEN_IDLE: &str =
 /// 1 s of digital silence, then stay alive without output.
 const SILENT_THEN_IDLE: &str = "head -c 32000 /dev/zero; exec sleep 30";
 const IDLE: &str = "exec sleep 30";
+static LOG_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+struct LogEnv(Option<std::ffi::OsString>);
+
+impl LogEnv {
+    fn set(path: &Path) -> Self {
+        common::use_test_log_dir();
+        let previous = std::env::var_os("MN_LOG_DIR");
+        std::env::set_var("MN_LOG_DIR", path);
+        Self(previous)
+    }
+}
+
+impl Drop for LogEnv {
+    fn drop(&mut self) {
+        match self.0.take() {
+            Some(value) => std::env::set_var("MN_LOG_DIR", value),
+            None => std::env::remove_var("MN_LOG_DIR"),
+        }
+    }
+}
 
 fn sh(script: &str) -> Vec<String> {
     ["sh", "-c", script].map(String::from).to_vec()
@@ -33,9 +57,18 @@ fn config(notes: &Path, me: &str, them: &str) -> Config {
 }
 
 fn run(cfg: &Config, opts: &RecordOptions) -> (anyhow::Result<PathBuf>, Vec<Status>) {
+    common::use_test_log_dir();
     let statuses = RefCell::new(Vec::new());
     let result = record(cfg, opts, |s| statuses.borrow_mut().push(s));
     (result, statuses.into_inner())
+}
+
+fn assert_no_sound(err: &anyhow::Error) {
+    assert_eq!(
+        err.downcast_ref::<Failure>().map(|failure| failure.kind),
+        Some(ErrorKind::NoSound),
+        "{err:#}"
+    );
 }
 
 fn wav_samples(path: &Path) -> Vec<i16> {
@@ -135,14 +168,16 @@ fn capture_processes_are_killed_when_recording_stops() {
     };
 
     let (result, statuses) = run(&cfg, &opts);
-    let session = result.unwrap();
+    let error = result.unwrap_err();
+    assert_no_sound(&error);
+    let session = only_session_dir(notes.path()).unwrap();
 
     let info = SessionInfo::load(&session).unwrap().unwrap();
     assert_eq!(info.stop_reason, StopReason::Max);
     assert!(info.seconds.me < 0.1 && info.seconds.them < 0.1);
-    assert!(statuses
+    assert!(!statuses
         .iter()
-        .any(|s| matches!(s, Status::Recording { elapsed: 1, .. })));
+        .any(|status| matches!(status, Status::Stopped { .. })));
     assert!(pid_is_gone(&pid_file), "capture process must be killed");
 }
 
@@ -159,7 +194,8 @@ fn capture_processes_get_sigterm_before_being_killed() {
         max_seconds: Some(1),
         ..RecordOptions::default()
     };
-    run(&cfg, &opts).0.unwrap();
+    let result = run(&cfg, &opts).0.unwrap_err();
+    assert_no_sound(&result);
     assert!(
         marker.exists(),
         "the capture command must get SIGTERM so it can clean up"
@@ -169,7 +205,7 @@ fn capture_processes_get_sigterm_before_being_killed() {
 #[test]
 fn stop_file_stops_with_user_reason() {
     let notes = tempfile::tempdir().unwrap();
-    let cfg = config(notes.path(), IDLE, IDLE);
+    let cfg = config(notes.path(), LOUD_THEN_IDLE, IDLE);
     let notes_path = notes.path().to_path_buf();
     let stopper = std::thread::spawn(move || loop {
         if let Some(dir) = only_session_dir(&notes_path) {
@@ -190,7 +226,7 @@ fn stop_file_stops_with_user_reason() {
 #[test]
 fn interrupt_flag_stops_with_signal_reason() {
     let notes = tempfile::tempdir().unwrap();
-    let cfg = config(notes.path(), IDLE, IDLE);
+    let cfg = config(notes.path(), LOUD_THEN_IDLE, IDLE);
     let opts = RecordOptions::default();
     let flag = opts.interrupt.clone();
     let setter = std::thread::spawn(move || {
@@ -282,13 +318,15 @@ fn recording_status_json_has_only_the_level_fields() {
 }
 
 #[test]
-fn stops_with_capture_ended_when_both_captures_exit() {
+fn early_capture_ended_is_no_sound_instead_of_success() {
     let notes = tempfile::tempdir().unwrap();
     let silent = "head -c 64000 /dev/zero";
     let cfg = config(notes.path(), silent, silent);
 
     let (result, statuses) = run(&cfg, &RecordOptions::default());
-    let session = result.unwrap();
+    let err = result.unwrap_err();
+    assert_no_sound(&err);
+    let session = only_session_dir(notes.path()).unwrap();
 
     assert_eq!(wav_samples(&session.join("me.wav")).len(), 32_000);
     assert_eq!(wav_samples(&session.join("them.wav")).len(), 32_000);
@@ -298,27 +336,149 @@ fn stops_with_capture_ended_when_both_captures_exit() {
     let raw: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(session.join("session.json")).unwrap()).unwrap();
     assert_eq!(raw["stop_reason"], "capture_ended");
-    let last = serde_json::to_value(statuses.last().unwrap()).unwrap();
-    assert_eq!(last["state"], "stopped");
-    assert_eq!(last["reason"], "capture_ended");
+    assert!(session.join(mn_core::record::RECORDING_FAILED).exists());
+    assert!(
+        statuses.is_empty(),
+        "a failed recording has no stopped status"
+    );
 }
 
 #[test]
-fn captures_exiting_after_speech_is_capture_ended() {
+fn capture_that_closes_stdout_is_stopped_when_the_recording_stops() {
+    let notes = tempfile::tempdir().unwrap();
+    let cfg = config(notes.path(), "exec 1>&-; exec sleep 30", LOUD_THEN_IDLE);
+    let opts = RecordOptions::default();
+    let notes_path = notes.path().to_path_buf();
+    let stopper = std::thread::spawn(move || loop {
+        if let Some(dir) = only_session_dir(&notes_path) {
+            std::thread::sleep(Duration::from_millis(300));
+            fs::write(dir.join("STOP"), "").unwrap();
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    });
+    let started = Instant::now();
+
+    let (result, _) = run(&cfg, &opts);
+    stopper.join().unwrap();
+    let session = result.unwrap();
+
+    assert!(started.elapsed() < Duration::from_secs(4));
+    assert_eq!(
+        SessionInfo::load(&session).unwrap().unwrap().stop_reason,
+        StopReason::User
+    );
+}
+
+#[test]
+fn microphone_permission_failure_is_reported_while_system_audio_keeps_recording() {
+    let notes = tempfile::tempdir().unwrap();
+    let cfg = config(
+        notes.path(),
+        "echo 'Permission denied opening microphone' >&2; exit 1",
+        LOUD_THEN_IDLE,
+    );
+    let opts = RecordOptions::default();
+    let notes_path = notes.path().to_path_buf();
+    let stopper = std::thread::spawn(move || loop {
+        if let Some(dir) = only_session_dir(&notes_path) {
+            std::thread::sleep(Duration::from_millis(300));
+            fs::write(dir.join("STOP"), "").unwrap();
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    });
+
+    let (result, _) = run(&cfg, &opts);
+    stopper.join().unwrap();
+
+    let err = result.unwrap_err();
+    assert_eq!(
+        err.downcast_ref::<Failure>().map(|failure| failure.kind),
+        Some(ErrorKind::MicUnavailable),
+        "{err:#}"
+    );
+}
+
+#[test]
+fn capture_ended_almost_at_once_is_no_sound_even_if_a_short_buffer_arrived() {
     let notes = tempfile::tempdir().unwrap();
     let speech = "head -c 16000 /dev/zero; head -c 32000 /dev/zero | tr '\\0' '@'";
     let cfg = config(notes.path(), speech, "head -c 48000 /dev/zero");
 
     let (result, _) = run(&cfg, &RecordOptions::default());
-
-    let info = SessionInfo::load(&result.unwrap()).unwrap().unwrap();
+    let err = result.unwrap_err();
+    assert_no_sound(&err);
+    let info = SessionInfo::load(&only_session_dir(notes.path()).unwrap())
+        .unwrap()
+        .unwrap();
     assert_eq!(info.stop_reason, StopReason::CaptureEnded);
+}
+
+#[test]
+fn both_silent_tracks_fail_with_no_sound() {
+    let notes = tempfile::tempdir().unwrap();
+    let cfg = config(notes.path(), IDLE, IDLE);
+    let opts = RecordOptions {
+        max_seconds: Some(1),
+        ..RecordOptions::default()
+    };
+
+    let (result, _) = run(&cfg, &opts);
+
+    let err = result.unwrap_err();
+    assert_no_sound(&err);
+}
+
+#[test]
+fn one_silent_track_warns_and_recording_succeeds() {
+    let _guard = LOG_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let notes = tempfile::tempdir().unwrap();
+    let logs = tempfile::tempdir().unwrap();
+    let _log_env = LogEnv::set(logs.path());
+    let cfg = config(notes.path(), LOUD_THEN_IDLE, IDLE);
+    let opts = RecordOptions {
+        max_seconds: Some(1),
+        ..RecordOptions::default()
+    };
+
+    let session = run(&cfg, &opts).0.unwrap();
+
+    assert!(session.is_dir());
+    let log = fs::read_to_string(logs.path().join("meeting-notes.log")).unwrap();
+    assert!(log.contains("WARN  [record] track=them silent"), "{log}");
+}
+
+#[test]
+fn failed_capture_logs_scrubbed_stderr_tail() {
+    let _guard = LOG_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let notes = tempfile::tempdir().unwrap();
+    let logs = tempfile::tempdir().unwrap();
+    let _log_env = LogEnv::set(logs.path());
+    let failed_me = "echo 'person@example.test https://client.test/private' >&2; exit 2";
+    let cfg = config(notes.path(), failed_me, LOUD_THEN_IDLE);
+    let opts = RecordOptions {
+        max_seconds: Some(1),
+        ..RecordOptions::default()
+    };
+
+    assert!(run(&cfg, &opts).0.is_ok());
+
+    let log = fs::read_to_string(logs.path().join("meeting-notes.log")).unwrap();
+    assert!(
+        log.contains("[capture] track=me exit_code=2 stderr_bytes="),
+        "{log}"
+    );
+    assert!(log.contains("<email>"), "{log}");
+    assert!(log.contains("<url>"), "{log}");
+    assert!(!log.contains("person@example.test"), "{log}");
+    assert!(!log.contains("https://client.test"), "{log}");
 }
 
 #[test]
 fn one_capture_exiting_does_not_stop_the_recording() {
     let notes = tempfile::tempdir().unwrap();
-    let cfg = config(notes.path(), "true", IDLE);
+    let cfg = config(notes.path(), "true", LOUD_THEN_IDLE);
     let opts = RecordOptions {
         max_seconds: Some(1),
         ..RecordOptions::default()
@@ -334,10 +494,14 @@ fn one_capture_exiting_does_not_stop_the_recording() {
 fn odd_chunk_boundaries_do_not_shift_samples() {
     let notes = tempfile::tempdir().unwrap();
     // 3 bytes, a pause, then 3 more: samples 0x4040, 0x4040, 0x4040 only if the odd byte is carried over
-    let pcm = "printf '@@@'; sleep 0.3; printf '@@@'";
-    let cfg = config(notes.path(), pcm, "true");
+    let pcm = "printf '@@@'; sleep 0.3; printf '@@@'; exec sleep 30";
+    let cfg = config(notes.path(), pcm, LOUD_THEN_IDLE);
 
-    let (result, _) = run(&cfg, &RecordOptions::default());
+    let opts = RecordOptions {
+        max_seconds: Some(1),
+        ..RecordOptions::default()
+    };
+    let (result, _) = run(&cfg, &opts);
 
     let me = wav_samples(&result.unwrap().join("me.wav"));
     assert_eq!(me, vec![0x4040; 3]);

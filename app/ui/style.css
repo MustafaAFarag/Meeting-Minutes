@@ -24,13 +24,31 @@ html, body {
 
 .defs { position: absolute; }
 
+/* The whole window. The column hangs from a side edge and the message card sits beside it, toward
+   the screen centre. With no card the window is as wide as the column. */
+#stage {
+  height: 100%;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+#stage[data-edge="left"] { flex-direction: row-reverse; }
+
 /* The tab hangs from a side edge: the corners toward the screen are round, the edge side is
    square and has no border. data-edge says which side that is. */
 #app {
+  flex: 0 1 44px;
+  min-width: 0;
   height: 100%;
   background: var(--tab);
   border: 1px solid rgba(255, 255, 255, 0.08);
   overflow: hidden;
+}
+/* With the card open the window is taller than the column. The column keeps its height and sits
+   at the offset the app computed, so it does not move on screen. */
+#stage[data-card="open"] #app {
+  height: 212px;
+  margin-top: var(--col-top, 0px);
 }
 #app[data-edge="right"] { border-right: 0; border-radius: var(--tab-radius) 0 0 var(--tab-radius); }
 #app[data-edge="left"] { border-left: 0; border-radius: 0 var(--tab-radius) var(--tab-radius) 0; }
@@ -61,6 +79,7 @@ html, body {
 #app[data-view="idle"] [data-view="idle"],
 #app[data-view="recording"] [data-view="recording"],
 #app[data-view="working"] [data-view="working"],
+#app[data-view="notes"] [data-view="working"],
 #app[data-view="updating"] [data-view="working"],
 #app[data-view="done"] [data-view="done"],
 #app[data-view="error"] [data-view="error"] { display: block; }
@@ -75,7 +94,7 @@ html, body {
 .mini .bang { font-size: 13px; }
 .spinner { flex: none; animation: spin 2.4s linear infinite; }
 
-/* Status line (unfolded). */
+/* Status line (unfolded). A button: it opens the card while there is something to explain. */
 .status {
   width: 100%;
   height: 32px;
@@ -83,7 +102,17 @@ html, body {
   align-items: center;
   justify-content: center;
   flex: none;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
 }
+.status[aria-disabled="true"] { cursor: default; }
+.status[aria-disabled="false"]:hover { background: rgba(255, 255, 255, 0.07); }
+.status:focus-visible { outline: 2px solid var(--cyan); outline-offset: -2px; }
 .status .dot { width: 8px; height: 8px; }
 .status .bang { font-size: 18px; }
 .check { color: var(--green); font-size: 18px; font-weight: 700; line-height: 1; }
@@ -154,7 +183,7 @@ html, body {
 .badge .count { color: var(--orange); font-variant-numeric: tabular-nums; }
 
 /* Newer release. Hidden until the app emits mn-update. Two short lines ("Update" / "v0.1.8").
-   A long confirmation ellipsizes; the full sentence is the tooltip. */
+   Anything longer is said on the message card. */
 .update-box {
   display: flex;
   flex-direction: column;
@@ -192,27 +221,94 @@ html, body {
   color: var(--red);
   border-color: rgba(229, 72, 77, 0.85);
 }
-.update.note {
-  flex-direction: row;
-  height: 18px;
-  min-height: 18px;
-}
-.update.note .kicker {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .update.help { min-height: 14px; height: 14px; padding: 0 1px; }
 .update:hover:not(:disabled) { background: rgba(217, 119, 87, 0.16); }
 .update.failed:hover:not(:disabled) { background: rgba(229, 72, 77, 0.16); }
 .update:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
 .update:disabled { opacity: 0.45; cursor: default; }
 
+/* The message card: words next to the column. A dark panel like the column, with a coloured edge
+   for what kind of message it is (red error, green done, cyan information). */
+.card {
+  --accent: rgba(108, 229, 232, 0.9);
+  --accent-edge: rgba(108, 229, 232, 0.4);
+  flex: 1 1 0;
+  min-width: 0;
+  max-height: 100%;
+  align-self: center;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  overflow-y: auto;
+  background: var(--tab);
+  border: 1px solid var(--accent-edge);
+  border-radius: var(--tab-radius);
+  color: var(--mist);
+  user-select: text;
+  -webkit-user-select: text;
+  animation: fade 0.15s ease-out;
+}
+.card[hidden] { display: none; }
+.card[data-tone="error"] { --accent: var(--red); --accent-edge: rgba(229, 72, 77, 0.7); }
+.card[data-tone="ok"] { --accent: var(--green); --accent-edge: rgba(61, 214, 140, 0.55); }
+.card:focus { outline: none; }
+.card-title {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+/* A mark in front of the title, so the kind of message is not shown by colour alone. */
+.card-title::before {
+  content: "i";
+  display: inline-block;
+  width: 15px;
+  height: 15px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--tab);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 15px;
+  text-align: center;
+  vertical-align: 1px;
+}
+.card[data-tone="error"] .card-title::before { content: "!"; }
+.card[data-tone="ok"] .card-title::before { content: "✓"; }
+.card-body { display: flex; flex-direction: column; gap: 5px; }
+.card-body:empty { display: none; }
+.card-body p {
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: rgba(238, 245, 244, 0.85);
+  overflow-wrap: anywhere;
+}
+.card-buttons { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.card-btn {
+  min-height: 28px;
+  padding: 5px 10px;
+  border: 1px solid rgba(238, 245, 244, 0.25);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--mist);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-align: center;
+  cursor: pointer;
+}
+.card-btn[data-primary="true"] { border-color: transparent; background: var(--core); }
+.card-btn:hover { filter: brightness(1.2); }
+.card-btn:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
+
 @keyframes fade { from { opacity: 0; } }
 @keyframes pulse { 50% { opacity: 0.25; transform: scale(0.8); } }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 @media (prefers-reduced-motion: reduce) {
-  .dot.rec, .spinner, .badge .spinner, .mini, .full { animation: none; }
+  .dot.rec, .spinner, .badge .spinner, .mini, .full, .card { animation: none; }
   .bar i { transition: none; }
 }

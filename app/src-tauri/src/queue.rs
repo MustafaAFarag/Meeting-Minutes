@@ -2,23 +2,52 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::{Condvar, Mutex};
 
-use mn_core::Status;
+use mn_core::{ErrorKind, Stage, Status};
+
+use crate::card::{session_label, Facts, FailedItem};
 
 /// What the widget shows about the notes queue. Sent to the window as the `mn-queue` event.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct QueueSnapshot {
-    /// The stage of the session being processed now, if any.
+    /// The stage of the session being processed now, in words, if any.
     pub processing: Option<String>,
     /// Sessions waiting behind it.
     pub waiting: usize,
-    /// The latest failure that has not been retried yet.
+    /// The plain message of the latest failure that has not been retried yet.
     pub last_error: Option<String>,
+    /// How many sessions are failed and waiting for "Try again".
+    pub failed: usize,
+    /// How many finished sessions the PM has not opened My Meetings for yet (the green check).
+    pub ready: usize,
+}
+
+/// Why a session failed: the plain kind the card explains, and where it happened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Problem {
+    pub kind: ErrorKind,
+    pub stage: Stage,
+}
+
+impl Problem {
+    /// A panic or anything else nobody expected.
+    pub const UNEXPECTED: Problem = Problem {
+        kind: ErrorKind::Unknown,
+        stage: Stage::Other,
+    };
 }
 
 /// A session that failed. It stays here so "Try again" can queue it once more.
 struct Failure {
     session: PathBuf,
-    message: String,
+    problem: Problem,
+}
+
+/// How one session ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Outcome {
+    pub session: PathBuf,
+    /// `None` when the notes were written and added to My Meetings.
+    pub problem: Option<Problem>,
 }
 
 #[derive(Default)]
@@ -27,6 +56,8 @@ struct Inner {
     current: Option<PathBuf>,
     label: Option<String>,
     failed: Vec<Failure>,
+    /// Finished sessions the PM has not opened My Meetings for.
+    ready: Vec<PathBuf>,
 }
 
 /// Recorded sessions waiting for transcribe -> summarize -> publish. One worker thread takes them
@@ -38,18 +69,19 @@ pub struct JobQueue {
 }
 
 /// The stage shown before the core reports its own.
-const FIRST_LABEL: &str = "Writing notes";
+const FIRST_LABEL: &str = "Getting started";
 
 impl JobQueue {
     /// Adds a session at the back. A session that is already waiting or being processed is
-    /// not added twice.
-    pub fn push(&self, session: PathBuf) {
+    /// not added twice. Returns whether it was added.
+    pub fn push(&self, session: PathBuf) -> bool {
         let mut inner = self.lock();
         if inner.current.as_ref() == Some(&session) || inner.waiting.contains(&session) {
-            return;
+            return false;
         }
         inner.waiting.push_back(session);
         self.wake.notify_one();
+        true
     }
 
     /// Blocks until at least one session is waiting.
@@ -84,46 +116,82 @@ impl JobQueue {
         count
     }
 
+    /// The finished sessions the PM has now seen (they opened My Meetings or started a new
+    /// recording). Returns how many there were.
+    pub fn acknowledge_ready(&self) -> usize {
+        std::mem::take(&mut self.lock().ready).len()
+    }
+
     pub fn snapshot(&self) -> QueueSnapshot {
         let inner = self.lock();
         QueueSnapshot {
             processing: inner.current.as_ref().and(inner.label.clone()),
             waiting: inner.waiting.len(),
-            last_error: inner.failed.last().map(|f| f.message.clone()),
+            last_error: inner
+                .failed
+                .last()
+                .map(|f| f.problem.kind.message().to_string()),
+            failed: inner.failed.len(),
+            ready: inner.ready.len(),
+        }
+    }
+
+    /// The queue as the message card sees it. The caller fills in `updating` and
+    /// `recording_failed`, which are not the queue's business.
+    pub fn facts(&self) -> Facts {
+        let inner = self.lock();
+        Facts {
+            updating: false,
+            recording_failed: None,
+            failed: inner
+                .failed
+                .iter()
+                .map(|f| FailedItem {
+                    name: session_label(&f.session),
+                    kind: f.problem.kind,
+                })
+                .collect(),
+            processing: inner.current.as_ref().and(inner.label.clone()),
+            waiting: inner.waiting.len(),
+            ready: inner.ready.iter().map(|s| session_label(s)).collect(),
         }
     }
 
     /// Takes the oldest waiting session and runs `process` on it. A failure (or a panic) is
     /// kept for "Try again" and does not stop the sessions behind it. `changed` runs after the
-    /// session is taken and again after it is finished. Returns false when nothing was waiting.
+    /// session is taken and again after it is finished. Returns how it ended, or `None` when
+    /// nothing was waiting.
     pub fn work_one(
         &self,
-        process: impl FnOnce(&Path) -> Result<(), String>,
+        process: impl FnOnce(&Path) -> Result<(), Problem>,
         changed: impl Fn(),
-    ) -> bool {
+    ) -> Option<Outcome> {
         let session = {
             let mut inner = self.lock();
-            let Some(session) = inner.waiting.pop_front() else {
-                return false;
-            };
+            let session = inner.waiting.pop_front()?;
             inner.current = Some(session.clone());
             inner.label = Some(FIRST_LABEL.to_string());
             session
         };
         changed();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| process(&session)))
-            .unwrap_or_else(|_| Err("The app hit an unexpected problem.".to_string()));
+            .unwrap_or(Err(Problem::UNEXPECTED));
+        let problem = result.err();
         {
             let mut inner = self.lock();
             inner.current = None;
             inner.label = None;
-            if let Err(message) = result {
-                eprintln!("error: {message}");
-                inner.failed.push(Failure { session, message });
+            match problem {
+                Some(problem) => inner.failed.push(Failure {
+                    session: session.clone(),
+                    problem,
+                }),
+                None if !inner.ready.contains(&session) => inner.ready.push(session.clone()),
+                None => {}
             }
         }
         changed();
-        true
+        Some(Outcome { session, problem })
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
@@ -133,12 +201,22 @@ impl JobQueue {
     }
 }
 
-/// The stage a core status starts, if it starts one.
+/// The stage a core status starts, in words a PM understands, if it starts one.
 pub fn stage_label(status: &Status) -> Option<&'static str> {
     match status {
-        Status::Transcribing { .. } => Some("Transcribing"),
-        Status::Summarizing { .. } => Some("Writing notes"),
-        Status::Publishing { .. } => Some("Updating My Meetings"),
+        Status::Transcribing { .. } => Some("Turning speech into text"),
+        Status::Summarizing { .. } => Some("Writing the notes"),
+        Status::Publishing { .. } => Some("Adding to My Meetings"),
+        _ => None,
+    }
+}
+
+/// The core stage a status starts, so a failure can be classified by where it happened.
+pub fn stage_of(status: &Status) -> Option<Stage> {
+    match status {
+        Status::Transcribing { .. } => Some(Stage::Transcribe),
+        Status::Summarizing { .. } => Some(Stage::Summarize),
+        Status::Publishing { .. } => Some(Stage::Publish),
         _ => None,
     }
 }
@@ -170,7 +248,9 @@ pub fn unfinished_sessions(notes_dir: &Path, skip: Option<&Path>) -> Vec<PathBuf
 fn is_unfinished(dir: &Path) -> bool {
     let has = |name: &str| dir.join(name).exists();
     let has_audio = has("session.json") && (has("me.wav") || has("them.wav"));
-    (has_audio || has("transcript.md")) && !has("card.json")
+    (has_audio || has("transcript.md"))
+        && !has("card.json")
+        && !has(mn_core::record::RECORDING_FAILED)
 }
 
 #[cfg(test)]
@@ -185,16 +265,26 @@ mod tests {
         PathBuf::from("/notes").join(name)
     }
 
+    fn problem(kind: ErrorKind) -> Problem {
+        Problem {
+            kind,
+            stage: Stage::Summarize,
+        }
+    }
+
     /// Runs every waiting session through `Ok(())`, returning the order they came in.
     fn drain(queue: &JobQueue) -> Vec<PathBuf> {
         let seen = StdMutex::new(Vec::new());
-        while queue.work_one(
-            |d| {
-                seen.lock().unwrap().push(d.to_path_buf());
-                Ok(())
-            },
-            || {},
-        ) {}
+        while queue
+            .work_one(
+                |d| {
+                    seen.lock().unwrap().push(d.to_path_buf());
+                    Ok(())
+                },
+                || {},
+            )
+            .is_some()
+        {}
         seen.into_inner().unwrap()
     }
 
@@ -213,31 +303,41 @@ mod tests {
         let queue = JobQueue::default();
         queue.push(dir("bad"));
         queue.push(dir("good"));
-        assert!(queue.work_one(|_| Err("whisper broke".into()), || {}));
+        let bad = queue.work_one(|_| Err(problem(ErrorKind::Whisper)), || {});
+        assert_eq!(bad.unwrap().problem, Some(problem(ErrorKind::Whisper)));
         let done = AtomicUsize::new(0);
-        assert!(queue.work_one(
-            |d| {
-                assert_eq!(d, dir("good"));
-                done.fetch_add(1, Ordering::SeqCst);
-                Ok(())
-            },
-            || {}
-        ));
+        assert!(queue
+            .work_one(
+                |d| {
+                    assert_eq!(d, dir("good"));
+                    done.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                },
+                || {}
+            )
+            .is_some());
         assert_eq!(done.load(Ordering::SeqCst), 1);
         let snap = queue.snapshot();
-        assert_eq!(snap.last_error.as_deref(), Some("whisper broke"));
-        assert_eq!((snap.processing, snap.waiting), (None, 0));
-        assert!(!queue.work_one(|_| Ok(()), || {}));
+        assert_eq!(
+            snap.last_error.as_deref(),
+            Some(ErrorKind::Whisper.message())
+        );
+        assert_eq!((snap.processing, snap.waiting, snap.failed), (None, 0, 1));
+        assert!(queue.work_one(|_| Ok(()), || {}).is_none());
     }
 
     #[test]
-    fn a_panic_counts_as_a_failure_and_the_queue_goes_on() {
+    fn a_panic_counts_as_an_unknown_failure_and_the_queue_goes_on() {
         let queue = JobQueue::default();
         queue.push(dir("a"));
         queue.push(dir("b"));
-        assert!(queue.work_one(|_| panic!("boom"), || {}));
-        assert!(queue.snapshot().last_error.is_some());
-        assert!(queue.work_one(|_| Ok(()), || {}));
+        let first = queue.work_one(|_| panic!("boom"), || {}).unwrap();
+        assert_eq!(first.problem, Some(Problem::UNEXPECTED));
+        assert_eq!(
+            queue.snapshot().last_error.as_deref(),
+            Some(ErrorKind::Unknown.message())
+        );
+        assert!(queue.work_one(|_| Ok(()), || {}).is_some());
     }
 
     #[test]
@@ -245,9 +345,12 @@ mod tests {
         let queue = JobQueue::default();
         queue.push(dir("a"));
         queue.push(dir("b"));
-        queue.work_one(|_| Err("one".into()), || {});
-        queue.work_one(|_| Err("two".into()), || {});
-        assert_eq!(queue.snapshot().last_error.as_deref(), Some("two"));
+        queue.work_one(|_| Err(problem(ErrorKind::Network)), || {});
+        queue.work_one(|_| Err(problem(ErrorKind::ClaudeFailed)), || {});
+        assert_eq!(
+            queue.snapshot().last_error.as_deref(),
+            Some(ErrorKind::ClaudeFailed.message())
+        );
         assert_eq!(queue.retry_failed(), 2);
         let snap = queue.snapshot();
         assert_eq!((snap.waiting, snap.last_error), (2, None));
@@ -258,13 +361,13 @@ mod tests {
     #[test]
     fn the_same_session_is_never_queued_twice() {
         let queue = JobQueue::default();
-        queue.push(dir("a"));
-        queue.push(dir("a"));
+        assert!(queue.push(dir("a")));
+        assert!(!queue.push(dir("a")));
         assert_eq!(queue.snapshot().waiting, 1);
         queue.work_one(
             |_| {
                 // Queued again while it is being processed.
-                queue.push(dir("a"));
+                assert!(!queue.push(dir("a")));
                 Ok(())
             },
             || {},
@@ -280,14 +383,17 @@ mod tests {
         let during = StdMutex::new(None);
         queue.work_one(
             |_| {
-                queue.set_label("Transcribing");
+                queue.set_label("Turning speech into text");
                 *during.lock().unwrap() = Some(queue.snapshot());
                 Ok(())
             },
             || {},
         );
         let during = during.into_inner().unwrap().unwrap();
-        assert_eq!(during.processing.as_deref(), Some("Transcribing"));
+        assert_eq!(
+            during.processing.as_deref(),
+            Some("Turning speech into text")
+        );
         assert_eq!(during.waiting, 1);
         assert_eq!(queue.snapshot().processing, None);
     }
@@ -303,8 +409,72 @@ mod tests {
         );
         let seen = seen.into_inner().unwrap();
         assert_eq!(seen.len(), 2);
-        assert!(seen[0].is_some());
+        assert_eq!(seen[0].as_deref(), Some("Getting started"));
         assert_eq!(seen[1], None);
+    }
+
+    #[test]
+    fn finished_notes_stay_ready_until_the_pm_has_seen_them() {
+        let queue = JobQueue::default();
+        queue.push(dir("2026-10-24_1405"));
+        queue.push(dir("2026-10-24_1500"));
+        let outcome = queue.work_one(|_| Ok(()), || {}).unwrap();
+        assert_eq!(outcome.problem, None);
+        queue.work_one(|_| Err(problem(ErrorKind::Network)), || {});
+        let snap = queue.snapshot();
+        assert_eq!((snap.ready, snap.failed), (1, 1));
+        assert_eq!(queue.facts().ready, vec!["2026-10-24_1405"]);
+        assert_eq!(queue.acknowledge_ready(), 1);
+        assert_eq!(queue.snapshot().ready, 0);
+        assert_eq!(queue.acknowledge_ready(), 0);
+    }
+
+    #[test]
+    fn a_retried_session_that_works_is_ready_not_failed() {
+        let queue = JobQueue::default();
+        queue.push(dir("2026-10-24_1405"));
+        queue.work_one(|_| Err(problem(ErrorKind::Network)), || {});
+        queue.retry_failed();
+        queue.work_one(|_| Ok(()), || {});
+        let snap = queue.snapshot();
+        assert_eq!((snap.failed, snap.ready, snap.last_error), (0, 1, None));
+    }
+
+    #[test]
+    fn the_card_facts_use_session_names_never_paths() {
+        let queue = JobQueue::default();
+        queue.push(PathBuf::from("/Users/someone/Notes/2026-10-24_1405"));
+        queue.push(PathBuf::from("/Users/someone/Notes/Acme kickoff"));
+        queue.push(dir("2026-10-24_1600"));
+        queue.work_one(|_| Err(problem(ErrorKind::ClaudeSignedOut)), || {});
+        queue.work_one(|_| Err(problem(ErrorKind::Network)), || {});
+        let during = StdMutex::new(None);
+        queue.work_one(
+            |_| {
+                queue.set_label("Writing the notes");
+                *during.lock().unwrap() = Some(queue.facts());
+                Ok(())
+            },
+            || {},
+        );
+        let facts = queue.facts();
+        assert_eq!(
+            facts.failed,
+            vec![
+                FailedItem {
+                    name: "2026-10-24_1405".into(),
+                    kind: ErrorKind::ClaudeSignedOut
+                },
+                FailedItem {
+                    name: "session".into(),
+                    kind: ErrorKind::Network
+                },
+            ]
+        );
+        assert_eq!(facts.ready, vec!["2026-10-24_1600"]);
+        let during = during.into_inner().unwrap().unwrap();
+        assert_eq!(during.processing.as_deref(), Some("Writing the notes"));
+        assert_eq!(during.waiting, 0);
     }
 
     #[test]
@@ -321,7 +491,7 @@ mod tests {
             },
             || {},
         );
-        assert!(ran);
+        assert!(ran.is_some());
     }
 
     #[test]
@@ -330,22 +500,31 @@ mod tests {
         let state = RunState::default();
         let _recording = state.begin().unwrap();
         state.queue.push(dir("a"));
-        assert!(state.queue.work_one(|_| Ok(()), || {}));
+        assert!(state.queue.work_one(|_| Ok(()), || {}).is_some());
     }
 
     #[test]
     fn stage_labels_follow_the_core_status() {
         use mn_core::capture::Track;
         let transcribing = Status::Transcribing { track: Track::Me };
-        assert_eq!(stage_label(&transcribing), Some("Transcribing"));
+        assert_eq!(stage_label(&transcribing), Some("Turning speech into text"));
+        assert_eq!(stage_of(&transcribing), Some(Stage::Transcribe));
         let publishing = Status::Publishing { meetings: 3 };
-        assert_eq!(stage_label(&publishing), Some("Updating My Meetings"));
+        assert_eq!(stage_label(&publishing), Some("Adding to My Meetings"));
+        assert_eq!(stage_of(&publishing), Some(Stage::Publish));
+        let writing = Status::Summarizing {
+            engine: mn_core::summarize::Engine::Claude,
+            reason: None,
+        };
+        assert_eq!(stage_label(&writing), Some("Writing the notes"));
+        assert_eq!(stage_of(&writing), Some(Stage::Summarize));
         let recording = Status::Recording {
             elapsed: 1,
             me_db: 0.0,
             them_db: 0.0,
         };
         assert_eq!(stage_label(&recording), None);
+        assert_eq!(stage_of(&recording), None);
     }
 
     fn session(root: &Path, name: &str, files: &[&str]) {
@@ -392,6 +571,12 @@ mod tests {
         );
         // Nothing left to process.
         session(r, "2026-10-20_1000", &["session.json"]);
+        // A failed recording (no sound): kept for debugging, never queued again.
+        session(
+            r,
+            "2026-10-20_1200",
+            &["session.json", "me.wav", "them.wav", "RECORDING_FAILED"],
+        );
         assert_eq!(
             names(unfinished_sessions(r, None)),
             ["2026-10-22_0900", "2026-10-22_0900-2", "2026-10-22_1100"]

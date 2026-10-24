@@ -4,13 +4,26 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use mn_core::session::{SessionInfo, StopReason, TrackSeconds};
 use serde_json::{json, Value};
 
 // Writing an executable while another test forks can give ETXTBSY; run these one at a time.
 static LOCK: Mutex<()> = Mutex::new(());
+static LOG_ENV_LOCK: Mutex<()> = Mutex::new(());
+static TEST_LOG_DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
+
+pub fn use_test_log_dir() {
+    let _guard = LOG_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    if std::env::var_os("MN_LOG_DIR").is_none() {
+        let path = TEST_LOG_DIR
+            .get_or_init(|| tempfile::tempdir().expect("temporary test log folder"))
+            .path()
+            .to_path_buf();
+        std::env::set_var("MN_LOG_DIR", path);
+    }
+}
 
 pub fn lock() -> MutexGuard<'static, ()> {
     LOCK.lock().unwrap_or_else(|e| e.into_inner())
