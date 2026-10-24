@@ -1,14 +1,17 @@
-use std::fs;
+use std::collections::HashSet;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, bail, Context, Result};
-use chrono::{DateTime, Local, SecondsFormat};
+use chrono::{DateTime, Duration, Local, SecondsFormat};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 
 use crate::config::Config;
 use crate::exec::{claude_command, command, reason, resolves, run, snippet};
-use crate::session::SessionInfo;
+use crate::session::{SessionInfo, TrackSeconds};
 use crate::status::Status;
 
 const TEMPLATE: &str = include_str!("../../prompts/meeting-card.md");
@@ -20,6 +23,7 @@ const CLAUDE_TOOLS: &str = "Read,mcp__claude_ai_Microsoft_365__outlook_calendar_
 pub const CARD_FILE: &str = "card.json";
 pub const MEETING_FILE: &str = "meeting.json";
 pub const TRANSCRIPT_FILE: &str = "transcript.md";
+const FULL_TRANSCRIPT_FILE: &str = "transcript.full.md";
 /// Written by `summarize`, removed by `publish` once the meeting is on the artifact page.
 pub const PUBLISH_PENDING: &str = "PUBLISH_PENDING";
 
@@ -112,21 +116,37 @@ pub fn summarize(cfg: &Config, session_dir: &Path, on_status: impl Fn(Status)) -
         .with_context(|| format!("session dir {}", session_dir.display()))?;
     let info = SessionInfo::load(&session_dir)?
         .ok_or_else(|| anyhow!("no session.json in {}", session_dir.display()))?;
-    let transcript = session_dir.join(TRANSCRIPT_FILE);
-    if !transcript.exists() {
+    let transcript_path = session_dir.join(TRANSCRIPT_FILE);
+    let full_transcript_path = session_dir.join(FULL_TRANSCRIPT_FILE);
+    let card_path = session_dir.join(CARD_FILE);
+    if card_path.exists() && full_transcript_path.exists() {
+        return Ok(card_path);
+    }
+    if full_transcript_path.exists() {
+        let full_transcript = fs::read_to_string(&full_transcript_path)
+            .with_context(|| format!("reading {}", full_transcript_path.display()))?;
+        let current = fs::read_to_string(&transcript_path).unwrap_or_default();
+        if current != full_transcript {
+            fs::write(&transcript_path, &full_transcript)
+                .with_context(|| format!("restoring {}", transcript_path.display()))?;
+        }
+    }
+    if !transcript_path.exists() {
         bail!(
             "no {TRANSCRIPT_FILE} in {}; run `mn transcribe` first",
             session_dir.display()
         );
     }
+    let transcript = fs::read_to_string(&transcript_path)
+        .with_context(|| format!("reading {}", transcript_path.display()))?;
 
     on_status(Status::Summarizing {
         engine: Engine::Claude,
         reason: None,
     });
     let claude_prompt = build_prompt(cfg, &session_dir, &info, Engine::Claude)?;
-    let (engine, card) = match run_claude(cfg, &session_dir, &claude_prompt) {
-        Ok(card) => (Engine::Claude, card),
+    let (engine, output) = match run_claude(cfg, &session_dir, &claude_prompt) {
+        Ok(output) => (Engine::Claude, output),
         Err(claude_err) => {
             let claude_reason = format!("{claude_err:#}");
             if !resolves(&cfg.codex_cli) {
@@ -141,7 +161,7 @@ pub fn summarize(cfg: &Config, session_dir: &Path, on_status: impl Fn(Status)) -
             });
             let codex_prompt = build_prompt(cfg, &session_dir, &info, Engine::Codex)?;
             match run_codex(cfg, &session_dir, &codex_prompt) {
-                Ok(card) => (Engine::Codex, card),
+                Ok(output) => (Engine::Codex, output),
                 Err(codex_err) => {
                     bail!("claude failed ({claude_reason}); codex failed ({codex_err:#})")
                 }
@@ -149,18 +169,343 @@ pub fn summarize(cfg: &Config, session_dir: &Path, on_status: impl Fn(Status)) -
         }
     };
 
-    let card_path = session_dir.join(CARD_FILE);
-    write_json(&card_path, &card)?;
-    let meeting = meeting_json(&card, &session_dir, &info, engine)?;
-    write_json(&session_dir.join(MEETING_FILE), &meeting)?;
-    let marker = session_dir.join(PUBLISH_PENDING);
-    fs::write(&marker, "").with_context(|| format!("writing {}", marker.display()))?;
+    let meetings = parse_meetings(&output)?;
+    let transcripts = split_transcript(&transcript, &meetings)?;
+    if meetings.len() == 1 {
+        write_one_meeting(&session_dir, &info, &meetings[0].card, engine)?;
+        write_completion_card(&card_path, &meetings[0].card)?;
+    } else {
+        write_split_meetings(
+            &session_dir,
+            &info,
+            &transcript,
+            &meetings,
+            &transcripts,
+            engine,
+            &card_path,
+        )?;
+    }
 
     on_status(Status::Summarized {
         engine,
         card: card_path.clone(),
     });
     Ok(card_path)
+}
+
+#[derive(Debug)]
+struct MeetingPart {
+    card: Value,
+    transcript_start: String,
+    transcript_end: String,
+    start_seconds: u64,
+    end_seconds: u64,
+}
+
+fn parse_meetings(output: &Value) -> Result<Vec<MeetingPart>> {
+    let meetings = output
+        .get("meetings")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("card output has no meetings array"))?;
+    if meetings.is_empty() || meetings.len() > 4 {
+        bail!("card output must contain between 1 and 4 meetings");
+    }
+
+    let mut parts: Vec<MeetingPart> = Vec::with_capacity(meetings.len());
+    for (index, value) in meetings.iter().enumerate() {
+        let mut card = value
+            .as_object()
+            .cloned()
+            .map(Value::Object)
+            .ok_or_else(|| anyhow!("meeting {} is not an object", index + 1))?;
+        let transcript_start = card
+            .get("transcript_start")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("meeting {} has no transcript_start", index + 1))?
+            .to_string();
+        let transcript_end = card
+            .get("transcript_end")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("meeting {} has no transcript_end", index + 1))?
+            .to_string();
+        let start_seconds = parse_transcript_offset(&transcript_start)
+            .with_context(|| format!("meeting {} transcript_start", index + 1))?;
+        let end_seconds = parse_transcript_offset(&transcript_end)
+            .with_context(|| format!("meeting {} transcript_end", index + 1))?;
+        if start_seconds > end_seconds {
+            bail!(
+                "meeting {} transcript range ends before it starts",
+                index + 1
+            );
+        }
+        if let Some(previous) = parts.last() {
+            if start_seconds <= previous.end_seconds {
+                bail!("meeting transcript ranges overlap or are out of order");
+            }
+        }
+        let object = card
+            .as_object_mut()
+            .ok_or_else(|| anyhow!("meeting {} is not an object", index + 1))?;
+        object.remove("transcript_start");
+        object.remove("transcript_end");
+        parts.push(MeetingPart {
+            card,
+            transcript_start,
+            transcript_end,
+            start_seconds,
+            end_seconds,
+        });
+    }
+    Ok(parts)
+}
+
+fn parse_transcript_offset(value: &str) -> Result<u64> {
+    let bytes = value.as_bytes();
+    if bytes.len() != 8 || bytes[2] != b':' || bytes[5] != b':' {
+        bail!("`{value}` is not HH:MM:SS");
+    }
+    let two_digits = |start: usize| -> Result<u64> {
+        let first = bytes[start];
+        let second = bytes[start + 1];
+        if !first.is_ascii_digit() || !second.is_ascii_digit() {
+            bail!("`{value}` is not HH:MM:SS");
+        }
+        Ok(u64::from(first - b'0') * 10 + u64::from(second - b'0'))
+    };
+    let hours = two_digits(0)?;
+    let minutes = two_digits(3)?;
+    let seconds = two_digits(6)?;
+    if minutes > 59 || seconds > 59 {
+        bail!("`{value}` is not a valid HH:MM:SS offset");
+    }
+    Ok(hours * 3600 + minutes * 60 + seconds)
+}
+
+fn transcript_timestamp(line: &str) -> Option<&str> {
+    let bracketed = line.strip_prefix('[')?;
+    let end = bracketed.find(']')?;
+    let timestamp = &bracketed[..end];
+    parse_transcript_offset(timestamp).ok().map(|_| timestamp)
+}
+
+fn split_transcript(transcript: &str, meetings: &[MeetingPart]) -> Result<Vec<String>> {
+    let mut assigned_lines = vec![0usize; meetings.len()];
+    let mut previous_meeting = 0usize;
+    let mut timestamped_lines = 0usize;
+    for line in transcript.lines() {
+        let Some(timestamp) = transcript_timestamp(line) else {
+            continue;
+        };
+        timestamped_lines += 1;
+        let seconds = parse_transcript_offset(timestamp)?;
+        let meeting_index = meetings
+            .iter()
+            .position(|meeting| seconds >= meeting.start_seconds && seconds <= meeting.end_seconds)
+            .ok_or_else(|| {
+                anyhow!("transcript timestamp `{timestamp}` is outside all meeting ranges")
+            })?;
+        if meeting_index < previous_meeting {
+            bail!("transcript lines are outside the meeting range order");
+        }
+        previous_meeting = meeting_index;
+        assigned_lines[meeting_index] += 1;
+    }
+    if meetings.len() > 1 && timestamped_lines == 0 {
+        bail!("cannot split a transcript with no timestamped lines");
+    }
+    if meetings.len() > 1 && assigned_lines.contains(&0) {
+        bail!("each meeting range must contain a transcript line");
+    }
+
+    meetings
+        .iter()
+        .map(|meeting| {
+            slice_transcript(
+                transcript,
+                &meeting.transcript_start,
+                &meeting.transcript_end,
+            )
+        })
+        .collect()
+}
+
+fn slice_transcript(transcript: &str, start: &str, end: &str) -> Result<String> {
+    let start = parse_transcript_offset(start)?;
+    let end = parse_transcript_offset(end)?;
+    if start > end {
+        bail!("transcript range ends before it starts");
+    }
+
+    let mut output = String::new();
+    let mut before_first_timestamp = true;
+    for raw_line in transcript.split_inclusive('\n') {
+        let line = raw_line.strip_suffix('\n').unwrap_or(raw_line);
+        match transcript_timestamp(line) {
+            Some(timestamp) => {
+                before_first_timestamp = false;
+                let seconds = parse_transcript_offset(timestamp)?;
+                if seconds >= start && seconds <= end {
+                    output.push_str(raw_line);
+                }
+            }
+            None if before_first_timestamp => output.push_str(raw_line),
+            None => {}
+        }
+    }
+    Ok(output)
+}
+
+fn shift_start_time(started_at: &str, offset_seconds: u64) -> Result<String> {
+    let offset = i64::try_from(offset_seconds).context("transcript offset is too large")?;
+    let started = DateTime::parse_from_rfc3339(started_at)
+        .with_context(|| format!("started_at `{started_at}` is not RFC3339"))?;
+    Ok((started + Duration::seconds(offset)).to_rfc3339_opts(SecondsFormat::Secs, false))
+}
+
+fn meeting_session_info(info: &SessionInfo, part: &MeetingPart) -> Result<SessionInfo> {
+    let duration = part.end_seconds - part.start_seconds;
+    Ok(SessionInfo {
+        started_at: shift_start_time(&info.started_at, part.start_seconds)?,
+        ended_at: shift_start_time(&info.started_at, part.end_seconds)?,
+        stop_reason: info.stop_reason,
+        seconds: TrackSeconds {
+            me: duration as f64,
+            them: duration as f64,
+        },
+        audio_deleted: info.audio_deleted,
+    })
+}
+
+fn write_one_meeting(
+    session_dir: &Path,
+    info: &SessionInfo,
+    card: &Value,
+    engine: Engine,
+) -> Result<()> {
+    let meeting = meeting_json(card, session_dir, info, engine)?;
+    write_json(&session_dir.join(MEETING_FILE), &meeting)?;
+    let marker = session_dir.join(PUBLISH_PENDING);
+    fs::write(&marker, "").with_context(|| format!("writing {}", marker.display()))
+}
+
+fn write_split_meetings(
+    session_dir: &Path,
+    info: &SessionInfo,
+    transcript: &str,
+    meetings: &[MeetingPart],
+    transcripts: &[String],
+    engine: Engine,
+    card_path: &Path,
+) -> Result<()> {
+    let notes_dir = session_dir
+        .parent()
+        .ok_or_else(|| anyhow!("session dir {} has no parent", session_dir.display()))?;
+    let original_name = session_dir
+        .file_name()
+        .ok_or_else(|| anyhow!("session dir {} has no name", session_dir.display()))?
+        .to_string_lossy()
+        .into_owned();
+    let mut occupied = fs::read_dir(notes_dir)
+        .with_context(|| format!("reading notes dir {}", notes_dir.display()))?
+        .map(|entry| {
+            entry
+                .with_context(|| format!("reading notes dir {}", notes_dir.display()))
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        })
+        .collect::<Result<HashSet<_>>>()?;
+
+    let original_marker = session_dir.join(PUBLISH_PENDING);
+    let original_was_pending = original_marker.exists();
+    let mut created_siblings = Vec::with_capacity(meetings.len() - 1);
+    let result = (|| {
+        for index in 1..meetings.len() {
+            let sibling = create_sibling_dir(notes_dir, &original_name, &mut occupied)?;
+            created_siblings.push(sibling.clone());
+            write_sibling_meeting(
+                &sibling,
+                info,
+                &meetings[index],
+                &transcripts[index],
+                engine,
+            )
+            .with_context(|| format!("writing split meeting {}", sibling.display()))?;
+        }
+
+        let full_transcript = session_dir.join(FULL_TRANSCRIPT_FILE);
+        fs::write(&full_transcript, transcript)
+            .with_context(|| format!("writing {}", full_transcript.display()))?;
+        let transcript_path = session_dir.join(TRANSCRIPT_FILE);
+        fs::write(&transcript_path, &transcripts[0])
+            .with_context(|| format!("writing {}", transcript_path.display()))?;
+        let first_info = meeting_session_info(info, &meetings[0])?;
+        write_one_meeting(session_dir, &first_info, &meetings[0].card, engine)?;
+        write_completion_card(card_path, &meetings[0].card)
+    })();
+    if result.is_err() {
+        if !original_was_pending {
+            let _ = fs::remove_file(&original_marker);
+        }
+        for sibling in created_siblings.iter().rev() {
+            let _ = fs::remove_file(sibling.join(PUBLISH_PENDING));
+            let _ = fs::remove_dir_all(sibling);
+        }
+    }
+    result
+}
+
+fn create_sibling_dir(
+    notes_dir: &Path,
+    original_name: &str,
+    occupied: &mut HashSet<String>,
+) -> Result<PathBuf> {
+    loop {
+        let name = choose_sibling_dir_name(original_name, occupied)
+            .ok_or_else(|| anyhow!("no free sibling session name for `{original_name}`"))?;
+        let path = notes_dir.join(&name);
+        match fs::create_dir(&path) {
+            Ok(()) => {
+                occupied.insert(name);
+                return Ok(path);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                occupied.insert(name);
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("creating split session {}", path.display()))
+            }
+        }
+    }
+}
+
+fn choose_sibling_dir_name(original: &str, occupied: &HashSet<String>) -> Option<String> {
+    let mut suffix = 2u64;
+    loop {
+        let candidate = format!("{original}-{suffix}");
+        if !occupied.contains(&candidate) {
+            return Some(candidate);
+        }
+        suffix = suffix.checked_add(1)?;
+    }
+}
+
+fn write_sibling_meeting(
+    sibling_dir: &Path,
+    original_info: &SessionInfo,
+    part: &MeetingPart,
+    transcript: &str,
+    engine: Engine,
+) -> Result<()> {
+    let info = meeting_session_info(original_info, part)?;
+    info.save(sibling_dir)?;
+    let transcript_path = sibling_dir.join(TRANSCRIPT_FILE);
+    fs::write(&transcript_path, transcript)
+        .with_context(|| format!("writing {}", transcript_path.display()))?;
+    write_json(&sibling_dir.join(CARD_FILE), &part.card)?;
+    let meeting = meeting_json(&part.card, sibling_dir, &info, engine)?;
+    write_json(&sibling_dir.join(MEETING_FILE), &meeting)?;
+    let marker = sibling_dir.join(PUBLISH_PENDING);
+    fs::write(&marker, "").with_context(|| format!("writing {}", marker.display()))
 }
 
 fn short(reason: &str) -> String {
@@ -267,4 +612,84 @@ fn meeting_json(
 fn write_json(path: &Path, value: &Value) -> Result<()> {
     let text = serde_json::to_string_pretty(value)?;
     fs::write(path, text).with_context(|| format!("writing {}", path.display()))
+}
+
+fn write_completion_card(path: &Path, value: &Value) -> Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("card path {} has no parent", path.display()))?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| anyhow!("card path {} has no file name", path.display()))?
+        .to_string_lossy();
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    let temporary = parent.join(format!(".{name}.tmp-{}-{nanos}", std::process::id()));
+    let text = serde_json::to_string_pretty(value)?;
+    let result = (|| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .with_context(|| format!("creating {}", temporary.display()))?;
+        file.write_all(text.as_bytes())
+            .with_context(|| format!("writing {}", temporary.display()))?;
+        drop(file);
+        if path.exists() {
+            fs::remove_file(path).with_context(|| format!("removing {}", path.display()))?;
+        }
+        fs::rename(&temporary, path)
+            .with_context(|| format!("renaming {} to {}", temporary.display(), path.display()))
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transcript_slice_keeps_header_and_inclusive_timestamped_lines() {
+        let transcript = concat!(
+            "# Transcript\n\n",
+            "<!-- fake meeting -->\n",
+            "[00:00:01] before\n",
+            "[00:10:54] at start\n",
+            "[00:20:00] at end\n",
+            "[00:20:01] after\n",
+        );
+
+        let slice = slice_transcript(transcript, "00:10:54", "00:20:00").unwrap();
+
+        assert_eq!(
+            slice,
+            concat!(
+                "# Transcript\n\n",
+                "<!-- fake meeting -->\n",
+                "[00:10:54] at start\n",
+                "[00:20:00] at end\n",
+            )
+        );
+    }
+
+    #[test]
+    fn shift_start_time_preserves_its_offset_across_midnight() {
+        assert_eq!(
+            shift_start_time("2026-03-04T23:59:30+02:00", 90).unwrap(),
+            "2026-03-05T00:01:00+02:00"
+        );
+    }
+
+    #[test]
+    fn sibling_name_uses_the_next_free_number() {
+        let occupied = HashSet::from(["recording-2".to_string(), "recording-3".to_string()]);
+        assert_eq!(
+            choose_sibling_dir_name("recording", &occupied).as_deref(),
+            Some("recording-4")
+        );
+    }
 }
