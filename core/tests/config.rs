@@ -179,6 +179,8 @@ fn new_fields_have_the_documented_defaults() {
     let cfg = Config::default();
     assert_eq!(cfg.language, "auto");
     assert!(cfg.vad_model.is_none());
+    assert_eq!(cfg.card_model, "claude-opus-5-5");
+    assert_eq!(cfg.card_effort, "medium");
     assert_eq!(
         cfg.threads,
         std::thread::available_parallelism().unwrap().get()
@@ -187,8 +189,12 @@ fn new_fields_have_the_documented_defaults() {
 
 #[test]
 fn new_fields_can_be_set_from_the_file() {
-    let cfg = Config::parse("threads = 6\nlanguage = \"ar\"\nvad_model = \"~/models/vad.bin\"\n")
-        .unwrap();
+    let cfg = Config::parse(
+        "threads = 6\nlanguage = \"ar\"\nvad_model = \"~/models/vad.bin\"\ncard_model = \"claude-sonnet-5-5\"\ncard_effort = \"high\"\n",
+    )
+    .unwrap();
+    assert_eq!(cfg.card_model, "claude-sonnet-5-5");
+    assert_eq!(cfg.card_effort, "high");
     assert_eq!(cfg.threads, 6);
     assert_eq!(cfg.language, "ar");
     assert_eq!(

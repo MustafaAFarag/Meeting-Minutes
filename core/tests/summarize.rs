@@ -178,7 +178,11 @@ fn claude_is_called_with_the_documented_arguments() {
         a[6],
         "Read,mcp__claude_ai_Microsoft_365__outlook_calendar_search,mcp__claude_ai_Microsoft_365__chat_message_search,mcp__claude_ai_Microsoft_365__sharepoint_search"
     );
-    assert_eq!(a.len(), 7, "the prompt goes on stdin");
+    assert_eq!(
+        &a[7..],
+        ["--model", "claude-opus-5-5", "--effort", "medium"]
+    );
+    assert_eq!(a.len(), 11, "the prompt goes on stdin");
     assert_eq!(call.cwd, fs::canonicalize(&session).unwrap());
     assert!(call
         .stdin

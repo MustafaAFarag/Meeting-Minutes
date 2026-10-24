@@ -174,6 +174,7 @@ fn run_claude(cfg: &Config, session_dir: &Path, prompt: &str) -> Result<Value> {
     cmd.args(["-p", "--output-format", "json", "--json-schema"])
         .arg(schema.to_string())
         .args(["--allowedTools", CLAUDE_TOOLS])
+        .args(["--model", &cfg.card_model, "--effort", &cfg.card_effort])
         .current_dir(session_dir);
     let out = run(&mut cmd, Some(prompt))
         .with_context(|| format!("could not run claude_cli {}", cfg.claude_cli.display()))?;

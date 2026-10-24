@@ -47,6 +47,10 @@ pub struct Config {
     pub claude_cli: PathBuf,
     /// The Codex CLI, used when Claude fails to write the card.
     pub codex_cli: PathBuf,
+    /// `claude --model` for the meeting card.
+    pub card_model: String,
+    /// `claude --effort` for the meeting card: low, medium, high, xhigh or max.
+    pub card_effort: String,
     /// Exported as CLAUDE_CONFIG_DIR for every `claude` call (e.g. a work account's config dir).
     pub claude_config_dir: Option<PathBuf>,
     /// The PM's name, passed to the card prompt.
@@ -77,6 +81,8 @@ impl Default for Config {
             capture_them: None,
             claude_cli: PathBuf::from("claude"),
             codex_cli: PathBuf::from("codex"),
+            card_model: "claude-opus-5-5".to_string(),
+            card_effort: "medium".to_string(),
             claude_config_dir: None,
             my_name: None,
             artifact_url: None,
