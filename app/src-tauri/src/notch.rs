@@ -8,8 +8,9 @@ use std::path::{Path, PathBuf};
 /// Logical size of the folded tab (width, height).
 pub const FOLDED_SIZE: (f64, f64) = (12.0, 56.0);
 /// Logical size of the unfolded column (width, height).
-/// Tall enough for the two-line Update button and the Get help line under a failed update.
-pub const UNFOLDED_SIZE: (f64, f64) = (44.0, 192.0);
+/// Tall enough for everything at once: the recording timer, Try again, the two-line Update
+/// button and Get help (198 px of content in a browser check, plus a margin).
+pub const UNFOLDED_SIZE: (f64, f64) = (44.0, 212.0);
 
 pub fn size_for(folded: bool) -> (f64, f64) {
     if folded {
