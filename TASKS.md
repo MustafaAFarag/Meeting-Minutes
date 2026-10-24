@@ -56,7 +56,7 @@ The pilot PM (Mac) uses it on 5 real meetings in 1 week. Each card is correct (r
   - [x] 10c. App: single instance, "Update available" tray item + widget badge that copies the update prompt, Linux autostart `Exec=` quoting (worker)
   - [x] 10d. `mn doctor` health check + `claude` fallback to `~/.local/bin` (worker)
   - [x] 10e. Setup scripts install git + Claude Code + `claude auth login`, `--update` flag, desktop/menu icons; `UPDATE.md`, `CHANGELOG.md`, `.claude/settings.json` allowlist, `scripts/release.sh`
-  - [ ] 10f. (done 2026-10-24: cleaned history force-pushed; main, v0.1.4, v0.1.5 have no client names; releases kept their 7 files) Next: `scripts/release.sh 0.1.6`, push the tag, wait for CI
+  - [x] 10f. Cleaned history force-pushed (main, v0.1.4, v0.1.5 have no client names). v0.1.6 released 2026-10-24 (CI green, 7 files, marked Latest)
   - [ ] 10g. Real-machine test on Mac and Windows: install from the README sentence, count prompts, update v0.1.6 to a test v0.1.7, reopen from the Dock/Desktop icon, reboot. Untested so far: windows.ps1 in PowerShell 5.1 (no pwsh here), Xcode-tools flow, `claude auth login` from the agent shell, Dock tile, Desktop .lnk, the 404 "still being prepared" path, whether Desktop honours the repo and user permission rules
 
 ## Decisions
