@@ -3,7 +3,7 @@
 Newest first. "What's new for you" is read by Claude to tell project managers what changed after an update, so keep it plain.
 "Technical" is for developers. `scripts/release.sh` needs a `## vX.Y.Z` heading here before it makes a release, and replaces `unreleased` with the date.
 
-## v0.1.11 - unreleased
+## v0.1.11 - 2026-10-24
 
 ### What's new for you
 - When something goes wrong, the widget now tells you in plain words what happened and what to do, with **Try again** and **Report a problem** buttons, and you get a notification.
