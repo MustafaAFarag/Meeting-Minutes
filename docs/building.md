@@ -54,6 +54,17 @@ The installers come from `scripts/setup/` (see `SETUP.md`; updates use `UPDATE.m
 To test the scripts without a release, point them at a local folder that holds the six files: `--release-base <dir>`
 (Windows: `-ReleaseBase <dir>`).
 
+## Self-update
+
+The widget's **Update** button copies `scripts/setup/update.sh` (Windows `update.ps1`) to a temp folder and runs the copy
+detached from the app, because it checks out a new tag and that rewrites the repo's own copy. The script fetches the tags in
+`~/Meeting-Minutes`, checks out the newest `v*` tag, runs that tag's setup script with `--update` (which quits the app,
+replaces it and `mn` with the release files of that tag, and starts it again), then runs `mn doctor`. On failure it checks
+the old tag out again and re-runs setup to restore the old version. It writes `update-status.json` and `update.log` in the
+settings folder (`meeting-notes` under the config dir) for the app to read. This needs an app version that has the button
+(v0.1.8 or newer); older installs update once with `UPDATE.md` and then use the button. The tag's release must be fully built
+before PMs click Update; until then they get "This version is still being prepared" and nothing is changed.
+
 ## Install on a Mac (unsigned)
 
 1. Open the `.dmg` and drag **Meeting Notes** into Applications.

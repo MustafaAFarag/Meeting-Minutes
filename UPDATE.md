@@ -1,5 +1,18 @@
 # UPDATE: runbook for the AI agent
 
+## Automatic update
+
+The widget's **Update** button updates the app by itself, with no Claude Code: it runs `scripts/setup/update.sh` (macOS, Linux) or `scripts/setup/update.ps1` (Windows). Those scripts do steps 2 to 7 below (fetch the tags, check out the newest one, run the setup script with `--update`, run `mn doctor`) and put the old version back if something fails. This runbook is the **repair path** for when that fails: the app's "Get help" button copies the sentence that points here.
+
+When you are here to repair a failed update, read these two files first (they are in the settings folder: macOS `<home>/Library/Application Support/meeting-notes`, Linux `<home>/.config/meeting-notes`, Windows `<home>\AppData\Roaming\meeting-notes`):
+
+- `update-status.json`: `state` (`running`, `up_to_date`, `done` or `failed`), `from`, `to`, `error` (one plain-English line) and `log`. A `running` state that does not change for 15 minutes means the update was interrupted: treat it as failed.
+- `update.log`: everything the updater and the setup script printed, with times. It is rewritten on every run.
+
+Use the `error` line and the end of `update.log` to see which step failed, then follow the steps below from the start (they are safe to repeat). `error` says "Git is missing" or "install folder is damaged": the files were not installed the normal way, so redo the install with `SETUP.md` (step 1 below).
+
+## For the AI agent
+
 The user clicked **Update** on the Meeting Notes widget and pasted this into the Claude Desktop app (Code tab): "Update Meeting Notes to the latest version by following the steps in `<home>/Meeting-Minutes/UPDATE.md`".
 The user is a non-technical project manager on a Mac or a Windows PC. Everything they do is click. You run every command yourself. Ask them nothing.
 Speak plainly: no jargon, no stack traces. Never paste logs to the user.
