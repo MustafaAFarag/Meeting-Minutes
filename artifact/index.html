@@ -575,9 +575,11 @@ a { color: var(--ctl); text-underline-offset: 2px; }
   var MD_NOTE = " Format: simple Markdown only (# and ## headings, - bullets, 1. numbered lists, **bold**, | pipe | tables |). No HTML.";
   var TASKS = {
     email: "Write a short email to the attendees: greeting, summary, decisions, action items with owners and dates, sign-off.",
-    status: "Write a 5-bullet status update for a manager: progress, decisions, risks/blockers, next steps, asks."
+    status: "Write a 5-bullet status update for a manager: progress, decisions, risks/blockers, next steps, asks.",
+    weekly: "Write a warm weekly recap email to the project team about the last 7 days of meetings in the data. Shape: first line \"Project weekly recap\"; then \"Hi dear team!\" and the first names of the people involved; then **What happened this week?** with 2 to 4 short paragraphs on what moved forward, saying who did what and thanking people by name; then **Next week** with bullets of upcoming sessions, events and asks, each ask addressed to a named person (\"Name, please ...\") with the day or date when known; end with one short thank-you to everyone for their work. Friendly and personal, no other headings.",
+    kickoff: "Write an internal kick-off brief for the team from this meeting. Shape: first line \"<Project name> | Internal Kick-off Brief\"; then short lines \"Client:\", \"Teams:\" (the teams involved), \"Status:\" (e.g. offer, PO, contract) and \"Approach:\" (e.g. digital first, then print). Then these sections, each heading starting with its emoji: \"🎯 What are we creating?\" (2 to 3 sentences: the deliverable, who will use it and how); \"📥 What the client provided\" (bullets: materials and client requests); one section per team, headed \"<emoji> <Team> - <lead name>\", with bullets of that team's tasks; \"🔄 Workflow\" (one line of steps joined with →); \"🚩 First things we need to solve\" (bullets, each starting with the team or teams responsible)."
   };
-  var LABELS = { email: "Email recap", status: "Status update" };
+  var LABELS = { email: "Email recap", status: "Status update", weekly: "Weekly team recap", kickoff: "Project kick-off brief" };
   function askState(id) { var s = asks.get(id); if (!s) { s = { scope: id === ALL ? "all" : "this", draft: "", busy: false, ctrl: null, out: "", kind: "", label: "", last: null, truncated: false }; asks.set(id, s); } return s; }
   function pad2(n) { return String(n).padStart(2, "0"); }
   function bytes(s) { return window.TextEncoder ? new TextEncoder().encode(s).length : String(s).length * 3; }
@@ -831,12 +833,13 @@ a { color: var(--ctl); text-underline-offset: 2px; }
   }
   function askRun(id, kind, request) {
     var m = meetings.get(id), st = askState(id);
-    if (!sample || st.busy || (!m && (id !== ALL || kind === "minutes"))) return;     // minutes need one meeting
+    if (!sample || st.busy || (!m && (id !== ALL || kind === "minutes" || kind === "kickoff"))) return;     // minutes and kick-off need one meeting
     var scope = st.scope, task = kind === "minutes" ? minutesTask(m) : kind === "free" ? "Request: " + request + "\n" + MD_NOTE.trim() : TASKS[kind] + MD_NOTE;
-    if (kind === "minutes" && scope === "all") scope = "this";
+    if ((kind === "minutes" || kind === "kickoff") && scope === "all") scope = "this";
+    if (kind === "weekly") scope = "all";
     var ctrl = new AbortController();
     st.busy = true; st.ctrl = ctrl; st.out = ""; st.kind = kind === "minutes" ? "minutes" : "free"; st.truncated = false;
-    st.label = (kind === "minutes" ? "Meeting minutes" : request) + " (" + (scope === "all" ? "all meetings" : "this meeting") + ")";
+    st.label = (kind === "minutes" ? "Meeting minutes" : kind === "free" ? request : LABELS[kind]) + " (" + (scope === "all" ? "all meetings" : "this meeting") + ")";
     st.last = { scope: scope, request: kind === "free" ? request : LABELS[kind] || "Minutes" };
     var ok = true;
     renderAsk();
@@ -879,7 +882,7 @@ a { color: var(--ctl); text-underline-offset: 2px; }
   function askAction(act, id) {
     var m = meetings.get(id), st = askState(id);
     if (!m && id !== ALL) return;
-    if (act === "minutes" || act === "email" || act === "status") askRun(id, act, "");
+    if (act === "minutes" || TASKS[act]) askRun(id, act, "");
     else if (act === "send") askSend(id);
     else if (act === "stop") { if (st.ctrl) st.ctrl.abort(); }
     else if (act === "scope-this" || act === "scope-all") { if (m) st.scope = act === "scope-all" ? "all" : "this"; renderAsk(); }
@@ -899,7 +902,7 @@ a { color: var(--ctl); text-underline-offset: 2px; }
     function b(act, label, cls, off) { return '<button class="btn' + (cls ? " " + cls : "") + '" data-ask="' + act + '" data-aid="' + id + '"' + (dis || off ? " disabled" : "") + ">" + label + "</button>"; }
     var out = outHtml(st), done = !st.busy && st.out && st.kind === "free";
     return '<div class="ask">' +
-      '<div class="btns">' + (downloads ? b("minutes", "Meeting minutes (.docx)", "fill", none) : "") + b("email", "Email recap") + b("status", "Status update") + "</div>" +
+      '<div class="btns">' + (downloads ? b("minutes", "Meeting minutes (.docx)", "fill", none) : "") + b("email", "Email recap") + b("status", "Status update") + b("weekly", "Weekly team recap") + b("kickoff", "Project kick-off brief", "", none) + "</div>" +
       '<div class="ask-row"><input type="text" data-ask-input="' + id + '" value="' + esc(st.draft) + '" placeholder="' + (st.scope === "all" ? "Ask about all your meetings\u2026" : "Ask about this meeting, or ask for a report\u2026") + '" aria-label="Ask MM" autocomplete="off">' + b("send", "Send", "fill") + "</div>" +
       '<div class="seg" role="group" aria-label="What Claude looks at">' + [["this", "This meeting"], ["all", "All meetings"]].map(function (x) {
         return '<button data-ask="scope-' + x[0] + '" data-aid="' + id + '" aria-pressed="' + (st.scope === x[0]) + '"' + (none && x[0] === "this" ? " disabled" : "") +
