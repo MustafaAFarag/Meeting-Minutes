@@ -3,7 +3,7 @@
 Newest first. "What's new for you" is read by Claude to tell project managers what changed after an update, so keep it plain.
 "Technical" is for developers. `scripts/release.sh` needs a `## vX.Y.Z` heading here before it makes a release, and replaces `unreleased` with the date.
 
-## v0.1.9 - unreleased
+## v0.1.9 - 2026-10-24
 
 ### What's new for you
 - Updating is one click: when the widget shows **Update** with a version number, click it. Meeting Notes installs the newest version, restarts by itself and tells you when it is done. No need to open Claude.
