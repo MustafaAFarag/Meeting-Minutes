@@ -142,9 +142,19 @@ a { color: var(--ctl); text-underline-offset: 2px; }
 .me .bubble { background: var(--me-bg); }
 .empty { text-align: center; color: var(--muted); padding: 40px 16px; }
 .empty b { display: block; color: var(--fg); font: 600 18px var(--font-display); margin-bottom: 4px; }
+.empty .btns { justify-content: center; margin-top: 12px; }
+.empty.err b { color: var(--negative); }
+.empty .why, .ask-err .why { display: block; margin-top: 8px; font-size: 12px; color: var(--muted); }
+.quiet { margin: 10px 0 0; }
+.foot { margin: 28px 0 0; font-size: 12px; text-align: center; }
+.skel { background: var(--surface); border-radius: 16px; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+.skel i { display: block; height: 12px; width: 60%; border-radius: 6px; background: var(--sel); animation: skel 1.4s ease-in-out infinite; }
+.skel i + i { width: 35%; height: 10px; }
+@keyframes skel { 50% { opacity: .45; } }
+.card.failed .card-head, .row.failed { cursor: pointer; }
 #toast { position: fixed; z-index: 60; left: 50%; transform: translateX(-50%); bottom: calc(16px + env(safe-area-inset-bottom, 0px));
   background: var(--btn-fill); color: var(--btn-fg); padding: 8px 16px; border-radius: 8px; font-size: 14px; max-width: 90vw; }
-@media (prefers-reduced-motion: reduce) { .chev { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .chev { transition: none; } .skel i { animation: none; } }
 
 .row { width: 100%; text-align: left; background: var(--surface); border: 0; border-radius: 16px; padding: 8px 12px; display: block; }
 .row:hover, .row.sel { background: var(--sel); }
@@ -188,6 +198,9 @@ a { color: var(--ctl); text-underline-offset: 2px; }
 .ask-out .mh { font: 600 15px/1.3 var(--font-display); color: var(--fg); margin: 10px 0 4px; }
 .ask-out .mh.h3 { font-size: 14px; font-weight: 500; }
 .ask-out > .mh:first-child { margin-top: 0; }
+.ask-err { background: var(--inset); border-left: 3px solid var(--negative); border-radius: 8px; padding: 8px 12px; color: var(--fg); }
+.ask-err p { margin: 0 0 8px; }
+.ask-err > :last-child { margin-bottom: 0; }
 .btn:disabled, .seg button:disabled { opacity: .5; cursor: default; text-decoration: none; }
 
 /* Related links, Attendees and the transcript buttons share one row; the buttons sit at the right end, level with the chips. */
@@ -230,6 +243,7 @@ a { color: var(--ctl); text-underline-offset: 2px; }
     <div class="dots" id="dots" aria-hidden="true"><canvas></canvas></div>
     <button class="tbtn" id="theme" type="button" aria-label="Switch to light theme" title="Switch theme"></button>
   </div>
+  <p class="sub quiet" id="stale" role="status" hidden></p>
   <div class="layout">
     <div class="side">
       <section class="today" id="today" aria-labelledby="today-h"></section>
@@ -238,10 +252,11 @@ a { color: var(--ctl); text-underline-offset: 2px; }
         <input id="search" type="search" placeholder="Search meetings" aria-label="Search meetings" autocomplete="off">
       </div>
       <div id="view"></div>
-      <p class="sub" id="note" hidden>Ticks are saved on this device only, because you are not signed in here.</p>
+      <p class="sub" id="note" hidden>Ticks are saved in this browser only. Other devices will not see them. <button class="linkbtn" type="button" data-note-ok>Got it</button></p>
     </div>
     <main class="detail" id="detail"></main>
   </div>
+  <p class="sub foot" id="ver"></p>
 </div>
 <div id="toast" role="status" hidden></div>
 <div id="ask-root" hidden>
@@ -255,9 +270,13 @@ a { color: var(--ctl); text-underline-offset: 2px; }
 
 <script>
 (function () {
+  var PAGE_VERSION = "0.1.10";       // a release bumps this; the footer shows it so a report can say which page was open
   var db = null, downloads = null, canWrite = true;
-  var meetings = new Map();          // id -> doc data (local copy)
+  var meetings = new Map();          // id -> doc data (local copy); a meeting that failed to load is a placeholder with _failed
   var loaded = false, dbMissing = false;
+  var loadErr = null, lastOk = null, retrying = false;   // loadErr: null | {first: bool, why}; lastOk: when the list last loaded
+  var noteSeen = false;
+  try { noteSeen = localStorage.getItem("mm-note-ok") === "1"; } catch (e) {}
   var tab = "meetings", query = "", selected = null;
   var mq = window.matchMedia("(min-width: 1000px)");
   if (mq.addEventListener) mq.addEventListener("change", function () { render(); });
@@ -377,8 +396,17 @@ a { color: var(--ctl); text-underline-offset: 2px; }
     return p;
   }
 
+  var FAILED_TITLE = "This meeting could not be loaded";
+  function retryBtn(label) { return '<button class="linkbtn" data-retry="*"' + (retrying ? " disabled" : "") + ">" + (retrying ? "Trying..." : label || "Try again") + "</button>"; }
+  function failedHtml(m) {
+    var h = headInfo(m);
+    return '<article class="card failed" id="m-' + esc(m.id) + '"><button class="card-head" data-retry="*" aria-label="' + FAILED_TITLE + '. Try again"' + (retrying ? " disabled" : "") + '><div class="main"><h3>' + FAILED_TITLE + '</h3><div class="meta">' + h.when +
+      '</div><div class="meta">' + (retrying ? "Trying..." : "Click to try again") + "</div></div></button></article>";
+  }
+
   /* narrow screens: a card that expands in place */
   function cardHtml(m) {
+    if (m._failed) return failedHtml(m);
     var open = expanded.has(m.id), h = headInfo(m);
     var out = '<article class="card' + (open ? " open" : "") + '" id="m-' + esc(m.id) + '"><button class="card-head" data-toggle="' + esc(m.id) + '" aria-expanded="' + open + '">' +
       '<div class="main"><h3>' + esc(titleOf(m)) + '</h3><div class="meta">' + h.when + "</div>" +
@@ -391,6 +419,7 @@ a { color: var(--ctl); text-underline-offset: 2px; }
   /* wide screens: compact row on the left, full detail on the right */
   function rowHtml(m, sel) {
     var h = headInfo(m);
+    if (m._failed) return '<div class="row failed' + (sel ? " sel" : "") + '" role="button" tabindex="0" data-select="' + esc(m.id) + '"><span class="rt">' + FAILED_TITLE + '</span><span class="meta">' + h.when + "</span></div>";
     // A div, not a button, so the rename pen (a button) can sit next to the name inside it.
     return '<div class="row' + (sel ? " sel" : "") + '" role="button" tabindex="0" data-select="' + esc(m.id) + '">' + titleHtml(m, "span") +
       '<span class="meta">' + h.when + "</span>" + (h.chips ? '<span class="chips">' + h.chips + "</span>" : "") + "</div>";
@@ -409,6 +438,8 @@ a { color: var(--ctl); text-underline-offset: 2px; }
     return '<div class="tline">' + name + pen + "</div>";
   }
   function detailHtml(m) {
+    if (m._failed) return '<div class="empty err"><b>' + FAILED_TITLE + "</b>" + headInfo(m).when + "<br>Check your internet connection, then try again." +
+      '<div class="btns"><button class="btn fill" data-retry="*"' + (retrying ? " disabled" : "") + ">" + (retrying ? "Trying..." : "Try again") + "</button></div></div>";
     var h = headInfo(m), p = parts(m);
     return '<div class="dhead"><h2>' + esc(titleOf(m)) + '</h2><div class="meta">' + h.when + "</div>" + (h.chips ? '<div class="chips">' + h.chips + "</div>" : "") + "</div>" +
       '<div class="dgrid"><div class="col">' + (p.summary ? '<div class="dc">' + p.summary + "</div>" : "") + (p.decisions ? '<div class="dc">' + p.decisions + "</div>" : "") + "</div>" +
@@ -425,6 +456,8 @@ a { color: var(--ctl); text-underline-offset: 2px; }
     if (inp && document.activeElement !== inp) { inp.value = editDraft; inp.focus(); inp.setSelectionRange(editDraft.length, editDraft.length); }
     renderAsk();                      // the Ask MM popup is not part of #view/#detail; it follows the open meeting
   }
+  var SKELS = '<div class="skel" aria-hidden="true"><i></i><i></i></div>'.repeat(3);
+  function whenLabel(d) { return !d ? "earlier" : (dayDiff(d) === 0 ? "" : dayLabel(d) + ", ") + hhmm(d); }
   function renderPage() {
     curId = null;
     $("today-label").textContent = dayLabel(new Date()) + ", " + new Date().getDate() + " " + MONTHS[new Date().getMonth()];
@@ -447,10 +480,17 @@ a { color: var(--ctl); text-underline-offset: 2px; }
     $("tabs").innerHTML = tabList
       .map(function (t) { return '<button class="tab" role="tab" data-tab="' + t[0] + '" aria-selected="' + (tab === t[0]) + '">' + t[1] + "<small>" + t[2] + "</small></button>"; }).join("");
 
-    $("note").hidden = !ticksLocal;
+    $("note").hidden = !ticksLocal || noteSeen;
+    var stale = $("stale");
+    stale.hidden = !(loaded && loadErr && !loadErr.first);
+    if (!stale.hidden) stale.innerHTML = "Could not refresh. Showing notes from " + esc(whenLabel(lastOk)) + ". " + retryBtn("Try again") + (loadErr.why ? ' <span class="why">Details: ' + esc(loadErr.why) + "</span>" : "");
     var v = $("view"), dt = $("detail"), wide = mq.matches;
     function put(main, side) { if (wide) { v.innerHTML = side || ""; dt.innerHTML = main; } else { v.innerHTML = main; dt.innerHTML = ""; } }
-    if (!loaded) { put('<div class="empty">Loading your meetings...</div>'); return; }
+    if (!loaded) { put('<div class="empty" role="status">Loading your meetings...</div>' + (wide ? "" : SKELS), SKELS); return; }
+    if (loadErr && loadErr.first) {
+      put('<div class="empty err" role="alert"><b>Your meetings could not be loaded.</b>Check your internet connection and reload.<div class="btns"><button class="btn fill" data-retry="*"' + (retrying ? " disabled" : "") + ">" + (retrying ? "Trying..." : "Try again") +
+        "</button></div>" + (loadErr.why ? '<span class="why">Details: ' + esc(loadErr.why) + "</span>" : "") + "</div>"); return;
+    }
     if (!meetings.size) { put('<div class="empty"><b>No meetings yet</b>Click Start in the widget when your next call begins.</div>'); return; }
 
     var ok = function (i) { return matches(i.m); };
@@ -490,23 +530,24 @@ a { color: var(--ctl); text-underline-offset: 2px; }
   }
 
   var toastTimer;
-  function toast(msg) { var t = $("toast"); t.textContent = msg; t.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(function () { t.hidden = true; }, 3500); }
+  function toast(msg, ms) { var t = $("toast"); t.textContent = msg; t.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(function () { t.hidden = true; }, ms || 3500); }
+  var SAVE_FAIL = "Could not save that. Try again in a moment.";
 
   /* ---------- actions ---------- */
   function saveLocalTicks() {
-    try { var o = {}; ticks.forEach(function (v, k) { o[k] = v; }); localStorage.setItem("mm-ticks", JSON.stringify(o)); } catch (e) {}
+    try { var o = {}; ticks.forEach(function (v, k) { o[k] = v; }); localStorage.setItem("mm-ticks", JSON.stringify(o)); } catch (e) { toast("Could not save that in this browser.", 6000); }
   }
   function tick(id, key, value) {
     var prev = ticks.get(id) || {}, next = Object.assign({}, prev); next[key] = value;
     ticks.set(id, next); render();                                   // instant
     if (!db) { saveLocalTicks(); return; }
     var p = (writeChain.get(id) || Promise.resolve()).then(function () { return db.doc("ticks/" + id).set(next); })
-      .catch(function () { ticks.set(id, prev); render(); toast("Could not save that. Try again in a moment."); });
+      .catch(function () { ticks.set(id, prev); render(); toast(SAVE_FAIL, 6000); });
     writeChain.set(id, p);
   }
 
   function saveLocalTitles() {
-    try { var o = {}; titles.forEach(function (v, k) { o[k] = v; }); localStorage.setItem("mm-titles", JSON.stringify(o)); } catch (e) {}
+    try { var o = {}; titles.forEach(function (v, k) { o[k] = v; }); localStorage.setItem("mm-titles", JSON.stringify(o)); } catch (e) { toast("Could not save that in this browser.", 6000); }
   }
   function startRename(id) {
     var m = meetings.get(id); if (!m || !canWrite) return;
@@ -525,12 +566,12 @@ a { color: var(--ctl); text-underline-offset: 2px; }
     if (!db) { saveLocalTitles(); return; }
     var key = "t:" + id, ref = db.doc("titles/" + id);
     var p = (writeChain.get(key) || Promise.resolve()).then(function () { return custom ? ref.set({ title: custom }) : ref.delete(); })
-      .catch(function () { if (prev) titles.set(id, prev); else titles.delete(id); render(); toast("Could not save that. Try again in a moment."); });
+      .catch(function () { if (prev) titles.set(id, prev); else titles.delete(id); render(); toast(SAVE_FAIL, 6000); });
     writeChain.set(key, p);
   }
 
   function saveLocalArchive() {
-    try { localStorage.setItem("mm-archived", JSON.stringify(Array.from(archived))); } catch (e) {}
+    try { localStorage.setItem("mm-archived", JSON.stringify(Array.from(archived))); } catch (e) { toast("Could not save that in this browser.", 6000); }
   }
   function setArchived(id, on) {
     if (!meetings.has(id) || !canWrite || archived.has(id) === on) return;
@@ -541,7 +582,7 @@ a { color: var(--ctl); text-underline-offset: 2px; }
     if (!db) { saveLocalArchive(); return; }
     var key = "a:" + id, ref = db.doc("archived/" + id);
     var p = (writeChain.get(key) || Promise.resolve()).then(function () { return on ? ref.set({ at: new Date().toISOString() }) : ref.delete(); })
-      .catch(function () { if (on) archived.delete(id); else archived.add(id); render(); toast("Could not save that. Try again in a moment."); });
+      .catch(function () { if (on) archived.delete(id); else archived.add(id); render(); toast(SAVE_FAIL, 6000); });
     writeChain.set(key, p);
   }
 
@@ -566,7 +607,8 @@ a { color: var(--ctl); text-underline-offset: 2px; }
   }
 
   /* ---------- Ask MM (floating popup) ---------- */
-  var sample = null, limitsP = null, docxP = null;     // sample stays null (launcher hidden) when the platform has no sample, or the viewer said no
+  var sample = null, limitsP = null, docxP = null;     // sample stays null (launcher hidden) when the platform has no sample
+  var denied = false;                                  // the viewer did not allow Claude to answer: the launcher stays, the popup says why
   var ALL = "__all__", askOpen = false, askLast = "";  // ALL = the state used when no meeting is open; askLast = the popup HTML last drawn
   var asks = new Map();                                // meeting id (or ALL) -> {scope, draft, busy, ctrl, out, kind, label, last, truncated}
   var DOCX_URL = "https://cdn.jsdelivr.net/npm/docx@9.8.1/dist/index.iife.js";
@@ -580,7 +622,8 @@ a { color: var(--ctl); text-underline-offset: 2px; }
     kickoff: "Write an internal kick-off brief for the team from this meeting. Shape: first line \"<Project name> | Internal Kick-off Brief\"; then short lines \"Client:\", \"Teams:\" (the teams involved), \"Status:\" (e.g. offer, PO, contract) and \"Approach:\" (e.g. digital first, then print). Then these sections, each heading starting with its emoji: \"🎯 What are we creating?\" (2 to 3 sentences: the deliverable, who will use it and how); \"📥 What the client provided\" (bullets: materials and client requests); one section per team, headed \"<emoji> <Team> - <lead name>\", with bullets of that team's tasks; \"🔄 Workflow\" (one line of steps joined with →); \"🚩 First things we need to solve\" (bullets, each starting with the team or teams responsible)."
   };
   var LABELS = { email: "Email recap", status: "Status update", weekly: "Weekly team recap", kickoff: "Project kick-off brief" };
-  function askState(id) { var s = asks.get(id); if (!s) { s = { scope: id === ALL ? "all" : "this", draft: "", busy: false, ctrl: null, out: "", kind: "", label: "", last: null, truncated: false }; asks.set(id, s); } return s; }
+  function askState(id) { var s = asks.get(id); if (!s) { s = { scope: id === ALL ? "all" : "this", draft: "", busy: false, ctrl: null, out: "", kind: "", label: "", last: null, truncated: false, err: "", why: "", retry: null, fileErr: "", fileRetry: null, trim: null }; asks.set(id, s); } return s; }
+  function askKey() { return curId && meetings.has(curId) && !meetings.get(curId)._failed ? curId : ALL; }
   function pad2(n) { return String(n).padStart(2, "0"); }
   function bytes(s) { return window.TextEncoder ? new TextEncoder().encode(s).length : String(s).length * 3; }
   function dateLine(d) { var h = d.getHours(); return d.getDate() + " " + MONTHS_FULL[d.getMonth()] + " " + d.getFullYear() + "  |  " + (h % 12 || 12) + ":" + pad2(d.getMinutes()) + " " + (h >= 12 ? "PM" : "AM"); }
@@ -673,16 +716,18 @@ a { color: var(--ctl); text-underline-offset: 2px; }
   function compose(task, data, note) {
     return INSTR + "\n\nToday is " + dateLine(new Date()).split("  |  ")[0] + ".\n\nTASK\n" + task + (note ? "\n\nNOTE\n" + note : "") + "\n\nDATA\n" + data;
   }
-  function buildInput(m, scope, task) {
+  function buildInput(m, scope, task, info) {
     return getLimits().then(function (lim) {
       var room = ((lim && lim.maxInputBytes) || 150000) - 8192 - bytes(task) - 600;     // 8 KB kept for the instructions
       if (scope === "all") {
         var list = sortedMeetings(false), chunks = [], used = 0, left = 0;
+        list = list.filter(function (x) { return !x._failed; });
         for (var i = 0; i < list.length; i++) {
           var c = "=== Meeting " + (i + 1) + " ===\n" + cardText(list[i]), b = bytes(c) + 2;
           if (used + b > room) { left = list.length - i; break; }
           chunks.push(c); used += b;
         }
+        if (left) info.left = left;
         return compose(task, chunks.join("\n\n") || "No meetings.", "These are all " + list.length + " active meetings, newest first, without transcripts." + (left ? " The " + left + " oldest were left out to fit the size limit." : ""));
       }
       return loadTranscript(m.id).then(function () {
@@ -690,7 +735,7 @@ a { color: var(--ctl); text-underline-offset: 2px; }
         if (tr) {
           tr = tr.split(/\r?\n/).filter(function (l) { return l.trim() && !/^#|^<!--/.test(l.trim()); }).join("\n");
           var c = cutMiddle(tr, room - bytes(card));
-          if (c.cut) note = "The transcript was cut in the middle to fit the size limit.";
+          if (c.cut) { note = "The transcript was cut in the middle to fit the size limit."; info.cut = true; }
           data += "\n\nTranscript (Me = the project manager, Them = the other people on the call):\n" + c.text;
         } else note = "No transcript is available for this meeting.";
         return compose(task, data, note);
@@ -802,19 +847,30 @@ a { color: var(--ctl); text-underline-offset: 2px; }
     });
     return k.doc("Meeting report", c);
   }
+  function fileErr(kind) { var x = new Error(kind); x.mmFile = kind; return x; }     // a failure of the file step, as opposed to Claude's answer
   function saveDocx(build, filename, okMsg) {
-    return loadDocx().then(function (d) { return d.Packer.toBlob(build(d)); })
-      .then(function (blob) { return downloads.save({ filename: filename, data: blob }); })
-      .then(function () { toast(okMsg); })
-      .catch(function (e) { if (e && e.code === "declined") return; toast("Could not save the Word file. Try again."); });
+    return loadDocx().then(function (d) {
+      return Promise.resolve().then(function () { return d.Packer.toBlob(build(d)); })
+        .then(function (blob) { return downloads.save({ filename: filename, data: blob }); })
+        .then(function () { toast(okMsg); }, function (e) { if (e && e.code === "declined") return; throw fileErr("docx_save"); });
+    }, function () { throw fileErr("docx_load"); });
+  }
+  /* Run a file step (save .docx / .md) for the popup; a failure shows inside it, with Try again. */
+  function runFile(id, job) {
+    var st = askState(id);
+    st.fileErr = ""; st.fileRetry = function () { runFile(id, job); }; renderAsk();
+    return job().catch(function (e) { st.fileErr = (e && e.mmFile) || "docx_save"; renderAsk(); });
   }
 
   /* running a request */
-  function askFail(e) {
-    var c = e && e.code;
-    if (c === "not_granted") { sample = null; renderAsk(); }
-    else if (c === "rate_limited") toast("Claude is busy. Try again in a minute.");
-    else toast("Claude could not answer. Try again.");
+  var ERR_MSG = { rate_limited: "Claude is busy. Try again in a minute.", failed: "Claude could not answer. Try again.", minutes: "Claude could not write the minutes. Try again." };
+  var FILE_MSG = { docx_load: "The Word file maker could not load. Check your internet connection and try again.", docx_save: "Could not save the Word file.", md: "Could not save the Markdown file." };
+  function askFail(id, e, minutes) {
+    var st = askState(id), c = e && e.code;
+    if (c === "not_granted") { denied = true; renderAsk(); return; }
+    st.err = c === "rate_limited" ? "rate_limited" : minutes ? "minutes" : "failed";
+    st.why = typeof c === "string" ? c : "";
+    if (!askOpen || askKey() !== id) toast(ERR_MSG[st.err], 6000);       // the popup is not showing this one: say it anyway
   }
   function outHtml(st) {
     var h = st.out ? mdHtml(parseMd(st.out)) : "";
@@ -822,6 +878,15 @@ a { color: var(--ctl); text-underline-offset: 2px; }
     if (st.truncated && !st.busy) h += '<p class="meta">The answer was cut short.</p>';
     return h;
   }
+  /* what went wrong, in the popup, with a way to run it again */
+  function askErrHtml(st, id) {
+    if (st.busy) return "";
+    var msg = st.err ? ERR_MSG[st.err] : st.fileErr ? FILE_MSG[st.fileErr] : "";
+    if (!msg) return "";
+    return '<div class="ask-err" role="alert"><p>' + msg + '</p><div class="btns"><button class="btn" data-ask="retry" data-aid="' + id + '">Try again</button></div>' +
+      (st.err && st.why ? '<span class="why">Details: ' + esc(st.why) + "</span>" : "") + "</div>";
+  }
+  function trimNote(st) { return st.trim ? (st.trim.left ? "Some older meetings were left out to fit." : st.trim.cut ? "The transcript was shortened to fit." : "") : ""; }
   function askPaint(id) {
     var st = askState(id);
     Array.prototype.forEach.call(document.querySelectorAll("[data-ask-out]"), function (el) {
@@ -831,36 +896,47 @@ a { color: var(--ctl); text-underline-offset: 2px; }
       if (tail) el.scrollTop = el.scrollHeight;
     });
   }
-  function askRun(id, kind, request) {
+  function askRun(id, kind, request, scopeNow, cont) {
     var m = meetings.get(id), st = askState(id);
-    if (!sample || st.busy || (!m && (id !== ALL || kind === "minutes" || kind === "kickoff"))) return;     // minutes and kick-off need one meeting
-    var scope = st.scope, task = kind === "minutes" ? minutesTask(m) : kind === "free" ? "Request: " + request + "\n" + MD_NOTE.trim() : TASKS[kind] + MD_NOTE;
+    if (!sample || denied || st.busy || (!m && (id !== ALL || kind === "minutes" || kind === "kickoff"))) return;     // minutes and kick-off need one meeting
+    var scope = scopeNow || st.scope, base = cont || "", info = {};
+    var task = kind === "minutes" ? minutesTask(m) : kind === "free" ? "Request: " + request + (base ? "\n\nYour earlier answer, which stopped early (carry on right after its last word, do not repeat it):\n" + base : "") + "\n" + MD_NOTE.trim() : TASKS[kind] + MD_NOTE;
     if ((kind === "minutes" || kind === "kickoff") && scope === "all") scope = "this";
     if (kind === "weekly") scope = "all";
     var ctrl = new AbortController();
-    st.busy = true; st.ctrl = ctrl; st.out = ""; st.kind = kind === "minutes" ? "minutes" : "free"; st.truncated = false;
-    st.label = (kind === "minutes" ? "Meeting minutes" : kind === "free" ? request : LABELS[kind]) + " (" + (scope === "all" ? "all meetings" : "this meeting") + ")";
-    st.last = { scope: scope, request: kind === "free" ? request : LABELS[kind] || "Minutes" };
+    st.busy = true; st.ctrl = ctrl; st.out = base; st.kind = kind === "minutes" ? "minutes" : "free"; st.truncated = false;
+    st.err = ""; st.why = ""; st.fileErr = ""; st.fileRetry = null; st.trim = null;
+    st.retry = { kind: kind, request: request, scope: scope, cont: base };
+    if (!base) {
+      st.label = (kind === "minutes" ? "Meeting minutes" : kind === "free" ? request : LABELS[kind]) + " (" + (scope === "all" ? "all meetings" : "this meeting") + ")";
+      st.last = { scope: scope, request: kind === "free" ? request : LABELS[kind] || "Minutes" };
+    }
     var ok = true;
     renderAsk();
     function done() { st.busy = false; st.ctrl = null; if (ok && !ctrl.signal.aborted) celebrate(); renderAsk(); }
-    buildInput(m, scope, task).then(function (input) {
+    buildInput(m, scope, task, info).then(function (input) {
       if (ctrl.signal.aborted) return;
+      st.trim = info;
       if (kind === "minutes") {
         return sample.json(input, { modelTier: "default", signal: ctrl.signal }).then(function (j) {
           if (ctrl.signal.aborted) return;
           j = normMinutes(j);
+          if (!j.executive_summary && !j.discussion.length && !j.actions.length) throw new Error("minutes were empty");
           var s = startOf(m), file = fileDate(s || new Date()) + "_" + (fileSafe(m.client) || "Meeting") + "_Meeting mins.docx";
-          return saveDocx(function (d) { return minutesDoc(d, j); }, file, "Minutes saved.");
+          var job = function () { return saveDocx(function (d) { return minutesDoc(d, j); }, file, "Minutes saved." + (trimNote(st) ? " " + trimNote(st) : "")); };
+          st.fileRetry = function () { runFile(id, job); };         // a failed save is retried without asking Claude again
+          return job();
         });
       }
-      return sample(input, { onText: function (o) { st.out = (o && o.text) || ""; askPaint(id); }, signal: ctrl.signal }).then(function (res) {
-        if (res && typeof res.text === "string") st.out = res.text;
+      return sample(input, { onText: function (o) { st.out = base + (base ? "\n" : "") + ((o && o.text) || ""); askPaint(id); }, signal: ctrl.signal }).then(function (res) {
+        if (res && typeof res.text === "string") st.out = base + (base ? "\n" : "") + res.text;
         st.truncated = !!(res && res.truncated);
       });
     }).catch(function (e) {
       if (ctrl.signal.aborted) return;                 // Stop was pressed: keep what arrived, say nothing
-      ok = false; st.out = ""; askFail(e);
+      ok = false;                                      // what already streamed stays in st.out
+      if (e && e.mmFile) { st.fileErr = e.mmFile; return; }
+      askFail(id, e, kind === "minutes");
     }).then(done);
   }
   function askSend(id) {
@@ -887,20 +963,28 @@ a { color: var(--ctl); text-underline-offset: 2px; }
     else if (act === "stop") { if (st.ctrl) st.ctrl.abort(); }
     else if (act === "scope-this" || act === "scope-all") { if (m) st.scope = act === "scope-all" ? "all" : "this"; renderAsk(); }
     else if (act === "copy") askCopy(st.out);
-    else if (act === "md") downloads.save({ filename: askFile(id, "md"), data: st.out }).then(function () { toast("Markdown saved."); }).catch(function (e) { if (e && e.code !== "declined") toast("Could not save the file."); });
+    else if (act === "retry") {
+      if (st.err && st.retry) askRun(id, st.retry.kind, st.retry.request, st.retry.scope, st.retry.cont);
+      else if (st.fileErr && st.fileRetry) st.fileRetry();
+    }
+    else if (act === "continue") askRun(id, "free", "Continue from where you stopped.", st.last && st.last.scope, st.out);
+    else if (act === "md") runFile(id, function () {
+      return downloads.save({ filename: askFile(id, "md"), data: st.out }).then(function () { toast("Markdown saved."); }, function (e) { if (e && e.code === "declined") return; throw fileErr("md"); });
+    });
     else if (act === "docx") {
       var s = st.last && st.last.scope === "all" ? null : startOf(m), all = st.last && st.last.scope === "all";
       var head = { client: all ? "" : m.client || "", name: all ? "All meetings" : titleOf(m), date: dateLine(s || new Date()) };
-      saveDocx(function (d) { return freeDoc(d, parseMd(st.out), head); }, askFile(id, "docx"), "Word file saved.");
+      runFile(id, function () { return saveDocx(function (d) { return freeDoc(d, parseMd(st.out), head); }, askFile(id, "docx"), "Word file saved."); });
     }
   }
   /* The popup body for what is open now: the open meeting, or ALL when none is open (then "This meeting" and minutes are off). */
   function askHtml() {
+    if (denied) return '<div class="ask"><div class="ask-err" role="alert"><p><b>Ask MM is turned off for this page.</b></p><p>Open the page settings, allow Claude to answer questions, then reload.</p></div></div>';
     if (!sample) return "";
-    var key = curId && meetings.has(curId) ? curId : ALL, m = meetings.get(key), none = !m;
+    var key = askKey(), m = meetings.get(key), none = !m;
     var st = askState(key), id = esc(key), dis = st.busy ? " disabled" : "";
     function b(act, label, cls, off) { return '<button class="btn' + (cls ? " " + cls : "") + '" data-ask="' + act + '" data-aid="' + id + '"' + (dis || off ? " disabled" : "") + ">" + label + "</button>"; }
-    var out = outHtml(st), done = !st.busy && st.out && st.kind === "free";
+    var out = outHtml(st), done = !st.busy && st.out && st.kind === "free" && !st.err && !st.fileErr, note = !st.busy && st.out && st.kind === "free" ? trimNote(st) : "";
     return '<div class="ask">' +
       '<div class="btns">' + (downloads ? b("minutes", "Meeting minutes (.docx)", "fill", none) : "") + b("email", "Email recap") + b("status", "Status update") + b("weekly", "Weekly team recap") + b("kickoff", "Project kick-off brief", "", none) + "</div>" +
       '<div class="ask-row"><input type="text" data-ask-input="' + id + '" value="' + esc(st.draft) + '" placeholder="' + (st.scope === "all" ? "Ask about all your meetings\u2026" : "Ask about this meeting, or ask for a report\u2026") + '" aria-label="Ask MM" autocomplete="off">' + b("send", "Send", "fill") + "</div>" +
@@ -909,15 +993,16 @@ a { color: var(--ctl); text-underline-offset: 2px; }
           (m && x[0] === "this" ? ' title="' + esc(titleOf(m)) + '"' : "") + ">" + x[1] + "</button>"; }).join("") + "</div>" +
       (st.label && (st.busy || st.out) ? '<div class="meta">' + esc(st.label) + "</div>" : "") +
       '<div class="ask-out" data-ask-out="' + id + '" aria-live="polite"' + (out ? "" : " hidden") + ">" + out + "</div>" +
+      (note ? '<div class="meta">' + note + "</div>" : "") + askErrHtml(st, id) +
       (st.busy ? '<div class="btns"><button class="btn" data-ask="stop" data-aid="' + id + '">Stop</button></div>' :
-        done ? '<div class="btns"><button class="btn" data-ask="copy" data-aid="' + id + '">Copy</button>' + (downloads ? '<button class="btn" data-ask="docx" data-aid="' + id + '">Download .docx</button><button class="btn" data-ask="md" data-aid="' + id + '">Download .md</button>' : "") + "</div>" : "") +
+        done ? '<div class="btns">' + (st.truncated ? '<button class="btn fill" data-ask="continue" data-aid="' + id + '">Ask to continue</button>' : "") + '<button class="btn" data-ask="copy" data-aid="' + id + '">Copy</button>' + (downloads ? '<button class="btn" data-ask="docx" data-aid="' + id + '">Download .docx</button><button class="btn" data-ask="md" data-aid="' + id + '">Download .md</button>' : "") + "</div>" : "") +
       "</div>";
   }
   /* Draw the popup. Only the body is rebuilt, and only when its HTML changed; focus, cursor and scroll are put back. */
   function renderAsk() {
     var root = $("ask-root"), panel = $("ask-panel"), body = $("ask-body");
-    root.hidden = !sample;
-    if (!sample) { askOpen = false; askLast = ""; panel.hidden = true; return; }
+    root.hidden = !sample && !denied;
+    if (!sample && !denied) { askOpen = false; askLast = ""; panel.hidden = true; return; }
     $("ask-fab").setAttribute("aria-expanded", String(askOpen));
     panel.hidden = !askOpen;
     ensureAvatars(); askMood();
@@ -980,13 +1065,15 @@ a { color: var(--ctl); text-underline-offset: 2px; }
   document.addEventListener("click", function (ev) {
     if (ev.target.closest("[data-rename]")) return;
     var pen = ev.target.closest("[data-pen]"); if (pen) { startRename(pen.dataset.pen); return; }
+    if (ev.target.closest("[data-note-ok]")) { noteSeen = true; try { localStorage.setItem("mm-note-ok", "1"); } catch (e) {} render(); return; }
+    if (ev.target.closest("[data-retry]")) { refresh(true); return; }
     var df = ev.target.closest("[data-due]");
     if (df) { dueFilter = df.dataset.due; try { localStorage.setItem("mm-due", dueFilter); } catch (e) {} render(); return; }
     var ar = ev.target.closest("[data-archive],[data-restore]");
     if (ar) { setArchived(ar.dataset.archive || ar.dataset.restore, !!ar.dataset.archive); return; }
     var el = ev.target.closest("[data-tab],[data-select],[data-toggle],[data-tr],[data-dl],[data-goto]"); if (!el) return;
     if (el.dataset.tab) { tab = el.dataset.tab; render(); }
-    else if (el.dataset.select) { selected = el.dataset.select; render(); }
+    else if (el.dataset.select) { selected = el.dataset.select; render(); if ((meetings.get(selected) || {})._failed) refresh(true); }
     else if (el.dataset.toggle) { var id = el.dataset.toggle; expanded.has(id) ? expanded.delete(id) : expanded.add(id); render(); }
     else if (el.dataset.tr) {
       var t = el.dataset.tr; if (trShown.has(t)) { trShown.delete(t); render(); } else { trShown.add(t); render(); loadTranscript(t); }
@@ -1019,30 +1106,47 @@ a { color: var(--ctl); text-underline-offset: 2px; }
   /* ---------- boot ---------- */
   var stamps = new Map(), refreshing = false;
   function getJson(url) { return fetch(url).then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); }); }
-  function refresh() {
+  function refresh(manual) {
+    if (manual) { retrying = true; render(); }
     if (refreshing) return; refreshing = true;
+    var failed = 0, why = "";
     getJson("data/index.json?t=" + Date.now()).then(function (idx) {
-      var list = (idx && idx.meetings) || [], ids = new Set();
-      return Promise.all(list.map(function (e) {
+      var list = idx && idx.meetings === undefined ? [] : idx && idx.meetings, ids = new Set();
+      if (!Array.isArray(list)) throw new Error("index.json is not a list of meetings");
+      return Promise.all(list.filter(function (e) { return e && e.id; }).map(function (e) {
         ids.add(e.id);
         var stamp = String(e.generated_at || e.started_at || "");
-        if (meetings.has(e.id) && stamps.get(e.id) === stamp) return null;
+        if (meetings.has(e.id) && !meetings.get(e.id)._failed && stamps.get(e.id) === stamp) return null;
         return getJson("data/meetings/" + encodeURIComponent(e.id) + ".json?v=" + encodeURIComponent(stamp)).then(function (m) {
+          if (!m || typeof m !== "object") throw new Error("not a meeting");
           m.id = e.id; stamps.set(e.id, stamp); meetings.set(e.id, m); trText.delete(e.id);
-        }, function () {});
+        }, function () {
+          // keep the copy we already have; a meeting never seen before shows as "could not be loaded"
+          if (!meetings.has(e.id) || meetings.get(e.id)._failed) meetings.set(e.id, { id: e.id, started_at: e.started_at, title: FAILED_TITLE, _failed: true });
+        });
       })).then(function () {
         Array.from(meetings.keys()).forEach(function (k) { if (!ids.has(k)) meetings.delete(k); });
       });
-    }).catch(function () { /* missing or broken index: show the empty state */ })
-      .then(function () { refreshing = false; loaded = true; render(); });
+    }).catch(function (e) { failed = 1; why = String((e && e.message) || e || ""); })
+      .then(function () {
+        refreshing = false; loaded = true; retrying = false;
+        if (failed) loadErr = { first: !lastOk, why: why };
+        else { loadErr = null; lastOk = new Date(); }
+        render();
+        if (manual) {
+          var bad = Array.from(meetings.values()).filter(function (m) { return m._failed; }).length;
+          if (failed || bad) toast(failed ? "Still could not load your meetings. Try again in a moment." : "Still could not load " + (bad === 1 ? "that meeting" : "some meetings") + ". Try again in a moment.", 6000);
+        }
+      });
   }
+  $("ver").textContent = "My Meetings page v" + PAGE_VERSION;
   render();
   refresh();
   setInterval(function () { if (document.visibilityState === "visible") refresh(); }, 60000);
   document.addEventListener("visibilitychange", function () { if (document.visibilityState === "visible") refresh(); });
 
   (window.claude ? window.claude.use("downloads") : Promise.resolve(null)).then(function (d) { downloads = d; render(); }, function () {});
-  (window.claude ? window.claude.use("sample") : Promise.resolve(null)).then(function (s) { sample = typeof s === "function" ? s : null; render(); }, function () {});
+  (window.claude ? window.claude.use("sample") : Promise.resolve(null)).then(function (s) { sample = typeof s === "function" ? s : null; render(); }, function (e) { if (e && e.code === "not_granted") { denied = true; render(); } });
   (window.claude ? window.claude.use("user") : Promise.resolve(null)).then(function (u) {
     if (u && u.can && u.can("data.write") === false) { canWrite = false; render(); }
   }, function () {});
