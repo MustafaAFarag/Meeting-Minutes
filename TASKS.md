@@ -68,7 +68,7 @@ The pilot PM (Mac) uses it on 5 real meetings in 1 week. Each card is correct (r
   - Done when: clicking "Update v0.1.x" on the widget installs the newest release, restarts the app and says so; a failure restores the old version and offers "Get help" (copies the UPDATE.md sentence)
   - [x] 12a. `scripts/setup/update.sh` + `update.ps1`: fetch, newest tag, setup --update, mn doctor, rollback; status in `update-status.json` (worker)
   - [x] 12b. App: button shows the newest version, refuses while recording or writing notes, runs the updater detached, reports the result after restart (worker)
-  - [ ] 12c. Release v0.1.8 before any PM installs (so nobody needs the copy-paste route)
+  - [x] 12c. Released as v0.1.9 on 2026-10-24 (v0.1.8 was tagged but its Windows test failed, so it has no release)
 
 ## Decisions
 - Capture interface: each capture source is a process that writes raw s16le 16 kHz mono PCM to stdout. On Linux this is `pw-record`; on Mac it will be a Swift sidecar. The Rust core reads the stream, measures levels, writes WAV, and auto-stops after silence.
