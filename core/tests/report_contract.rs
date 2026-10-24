@@ -65,7 +65,12 @@ fn report_contains_only_diagnostics_and_redacts_config_paths() {
     fs::write(log_dir.join("meeting-notes.log.2"), "old log two\n").unwrap();
     let cache_dir = cache_home.join("meeting-notes");
     fs::create_dir_all(&cache_dir).unwrap();
-    fs::write(cache_dir.join("widget.log"), "old widget log\n").unwrap();
+    // An old widget.log from before the scrubber, with an e-mail and a link in it.
+    fs::write(
+        cache_dir.join("widget.log"),
+        "old widget log jane.doe@example.com https://claude.ai/artifact/abc123\n",
+    )
+    .unwrap();
     let config_dir = config_home.join("meeting-notes");
     fs::create_dir_all(&config_dir).unwrap();
     fs::write(config_dir.join("update.log"), "update log\n").unwrap();
@@ -135,8 +140,11 @@ fn report_contains_only_diagnostics_and_redacts_config_paths() {
         .unwrap()
         .read_to_string(&mut config)
         .unwrap();
-    assert!(config.contains("Pat Example"), "{config}");
-    assert!(config.contains("private-example"), "{config}");
+    // The name and the page link identify the person: only whether they are set.
+    assert!(!config.contains("Pat Example"), "{config}");
+    assert!(!config.contains("private-example"), "{config}");
+    assert!(config.contains("my_name = \"<set>\""), "{config}");
+    assert!(config.contains("artifact_url = \"<set>\""), "{config}");
     assert!(config.contains("<redacted>"), "{config}");
     assert!(
         !config.contains(&home.to_string_lossy().to_string()),
@@ -165,6 +173,9 @@ fn report_contains_only_diagnostics_and_redacts_config_paths() {
         !archive_contents.contains("PRIVATE MEETING"),
         "session contents leaked into report"
     );
+    assert!(archive_contents.contains("old widget log"));
+    assert!(!archive_contents.contains("jane.doe@example.com"));
+    assert!(!archive_contents.contains("claude.ai/artifact/abc123"));
 }
 
 #[test]
@@ -200,7 +211,7 @@ fn report_config_lists_effective_fields_when_optional_values_are_unset() {
         .unwrap()
         .read_to_string(&mut config)
         .unwrap();
-    assert!(config.contains("my_name = \"\""), "{config}");
-    assert!(config.contains("artifact_url = \"\""), "{config}");
+    assert!(config.contains("my_name = \"<not set>\""), "{config}");
+    assert!(config.contains("artifact_url = \"<not set>\""), "{config}");
     assert!(config.contains("notes_dir ="), "{config}");
 }

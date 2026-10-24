@@ -52,14 +52,14 @@ fn create_report_at(config_path: Option<&Path>, output: &Path, log_folder: &Path
         "meeting-notes.log.1",
         "meeting-notes.log.2",
     ] {
-        add_file_if_present(&mut zip, options, log_folder.join(name), name)?;
+        add_log_if_present(&mut zip, options, log_folder.join(name), name)?;
     }
     let cache_dir = dirs::cache_dir().unwrap_or_else(|| {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".cache")
     });
-    add_file_if_present(
+    add_log_if_present(
         &mut zip,
         options,
         cache_dir.join("meeting-notes").join("widget.log"),
@@ -72,13 +72,13 @@ fn create_report_at(config_path: Option<&Path>, output: &Path, log_folder: &Path
             .join(".config")
     });
     let update_dir = config_dir.join("meeting-notes");
-    add_file_if_present(
+    add_log_if_present(
         &mut zip,
         options,
         update_dir.join("update.log"),
         "update.log",
     )?;
-    add_file_if_present(
+    add_log_if_present(
         &mut zip,
         options,
         update_dir.join("update-status.json"),
@@ -102,21 +102,26 @@ fn create_report_at(config_path: Option<&Path>, output: &Path, log_folder: &Path
     Ok(())
 }
 
-fn add_file_if_present(
+/// Adds a log through `scrub()`, line by line: older logs (widget.log before v0.1.10, update.log
+/// with setup output) were written without it and can hold e-mails, links or home paths.
+fn add_log_if_present(
     zip: &mut ZipWriter<File>,
     options: SimpleFileOptions,
     source: PathBuf,
     name: &str,
 ) -> Result<()> {
-    let mut file = match File::open(&source) {
-        Ok(file) => file,
+    let bytes = match fs::read(&source) {
+        Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error).with_context(|| format!("opening {}", source.display())),
+        Err(error) => return Err(error).with_context(|| format!("reading {}", source.display())),
     };
-    zip.start_file(name, options)
-        .with_context(|| format!("adding {name} to report"))?;
-    std::io::copy(&mut file, zip).with_context(|| format!("reading {}", source.display()))?;
-    Ok(())
+    let text = String::from_utf8_lossy(&bytes);
+    let mut clean = String::with_capacity(text.len());
+    for line in text.lines() {
+        clean.push_str(&crate::logging::scrub(line));
+        clean.push('\n');
+    }
+    add_bytes(zip, options, name, clean.as_bytes())
 }
 
 fn add_bytes(
@@ -217,12 +222,17 @@ fn redact_config(text: String, cfg: &Config) -> String {
                 toml::Value::String("<redacted>".to_string()),
             );
         }
-        table
-            .entry("my_name")
-            .or_insert_with(|| toml::Value::String(cfg.my_name.clone().unwrap_or_default()));
-        table
-            .entry("artifact_url")
-            .or_insert_with(|| toml::Value::String(cfg.artifact_url.clone().unwrap_or_default()));
+        // The page link, the name and the notes folder identify the person: say only whether they are set.
+        let presence =
+            |set: bool| toml::Value::String(if set { "<set>" } else { "<not set>" }.to_string());
+        let name_set = cfg.my_name.as_deref().is_some_and(|n| !n.trim().is_empty());
+        let url_set = cfg
+            .artifact_url
+            .as_deref()
+            .is_some_and(|u| !u.trim().is_empty());
+        table.insert("my_name".to_string(), presence(name_set));
+        table.insert("artifact_url".to_string(), presence(url_set));
+        table.insert("notes_dir".to_string(), presence(true));
     }
     toml::to_string_pretty(&value).unwrap_or_else(|_| {
         "Config could not be safely rendered. Run mn doctor for details.\n".to_string()
