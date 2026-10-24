@@ -12,11 +12,25 @@ pub const FOLDED_SIZE: (f64, f64) = (12.0, 56.0);
 /// button and Get help (198 px of content in a browser check, plus a margin).
 pub const UNFOLDED_SIZE: (f64, f64) = (44.0, 212.0);
 
+/// Logical size of the window while the message card is open: the 44 px column plus the card
+/// (256 px) beside it. It is taller than the column so a card with a long hint and three buttons
+/// fits; the column keeps its place inside it (see `column_offset`).
+pub const CARD_WINDOW: (f64, f64) = (300.0, 300.0);
+
 pub fn size_for(folded: bool) -> (f64, f64) {
     if folded {
         FOLDED_SIZE
     } else {
         UNFOLDED_SIZE
+    }
+}
+
+/// The window size with or without the card. The folded tab never carries a card.
+pub fn size_for_card(folded: bool, card_open: bool) -> (f64, f64) {
+    if !folded && card_open {
+        CARD_WINDOW
+    } else {
+        size_for(folded)
     }
 }
 
@@ -126,6 +140,28 @@ impl Anchor {
             y: self.center_y,
         }
     }
+}
+
+/// How far below the window's top the column starts (physical pixels), so the column stays where
+/// it was on screen when a taller window opens around it. Zero when the window is the column's size.
+pub fn column_offset(anchor: &Anchor, window_h: i32, column_h: i32) -> i32 {
+    anchor.window_pos(0, column_h).1 - anchor.window_pos(0, window_h).1
+}
+
+/// Centre of the column for a window at `pos`. The column hangs from `edge`, so it is the window's
+/// outer side, with the card on the inner side.
+pub fn column_center(
+    edge: Edge,
+    pos: (i32, i32),
+    window: (i32, i32),
+    column: (i32, i32),
+    offset: i32,
+) -> (i32, i32) {
+    let x = match edge {
+        Edge::Left => pos.0 + column.0 / 2,
+        Edge::Right => pos.0 + window.0 - column.0 / 2,
+    };
+    (x, pos.1 + offset + column.1 / 2)
 }
 
 /// The anchor for a tab dropped with its centre at (`x`, `y`): the monitor containing the point
@@ -280,6 +316,76 @@ mod tests {
     fn sizes_are_folded_and_unfolded() {
         assert_eq!(size_for(true), FOLDED_SIZE);
         assert_eq!(size_for(false), UNFOLDED_SIZE);
+    }
+
+    #[test]
+    fn the_card_widens_the_window_and_never_the_folded_tab() {
+        assert_eq!(size_for_card(false, true), CARD_WINDOW);
+        assert_eq!(size_for_card(false, false), UNFOLDED_SIZE);
+        assert_eq!(size_for_card(true, true), FOLDED_SIZE);
+        assert!(CARD_WINDOW.0 > UNFOLDED_SIZE.0 && CARD_WINDOW.1 >= UNFOLDED_SIZE.1);
+    }
+
+    fn anchor(edge: Edge, center_y: i32) -> Anchor {
+        Anchor {
+            edge,
+            monitor: LEFT,
+            center_y,
+        }
+    }
+
+    #[test]
+    fn the_card_grows_toward_the_screen_centre() {
+        let (cw, ch) = (300, 300);
+        let (w, h) = (44, 212);
+        let right = anchor(Edge::Right, 540);
+        let (x_closed, _) = right.window_pos(w, h);
+        let (x_open, _) = right.window_pos(cw, ch);
+        assert_eq!(x_closed + w, 1920);
+        assert_eq!(x_open + cw, 1920);
+        assert!(x_open < x_closed, "grows left, toward the centre");
+        let left = anchor(Edge::Left, 540);
+        assert_eq!(left.window_pos(w, h).0, 0);
+        assert_eq!(left.window_pos(cw, ch).0, 0);
+    }
+
+    #[test]
+    fn the_column_stays_where_it_was_when_the_card_opens() {
+        let (col, win) = ((44, 212), (300, 300));
+        for edge in [Edge::Left, Edge::Right] {
+            // Middle of the screen, and squeezed against the top and the bottom edge.
+            for center_y in [540, 10, 1075] {
+                let a = anchor(edge, center_y);
+                let closed_pos = a.window_pos(col.0, col.1);
+                let open_pos = a.window_pos(win.0, win.1);
+                let offset = column_offset(&a, win.1, col.1);
+                let before = column_center(edge, closed_pos, col, col, 0);
+                let after = column_center(edge, open_pos, win, col, offset);
+                assert_eq!(before, after, "{edge:?} at {center_y}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_column_offset_stays_inside_the_window() {
+        for center_y in [0, 10, 100, 540, 1000, 1079] {
+            let offset = column_offset(&anchor(Edge::Right, center_y), 300, 212);
+            assert!((0..=88).contains(&offset), "{center_y}: {offset}");
+        }
+        // Centred, the column sits in the middle of the window.
+        assert_eq!(column_offset(&anchor(Edge::Right, 540), 300, 212), 44);
+        // No card: no offset.
+        assert_eq!(column_offset(&anchor(Edge::Right, 540), 212, 212), 0);
+    }
+
+    #[test]
+    fn a_drop_with_the_card_open_uses_the_column_not_the_window() {
+        // Right edge, card open: the window centre is left of the column, but the drop point is
+        // the column's centre.
+        let (x, y) = column_center(Edge::Right, (1620, 400), (300, 300), (44, 212), 44);
+        assert_eq!((x, y), (1898, 550));
+        let (x, y) = column_center(Edge::Left, (0, 400), (300, 300), (44, 212), 44);
+        assert_eq!((x, y), (22, 550));
     }
 
     #[test]

@@ -21,6 +21,9 @@ use crate::status::Status;
 const STOP_FILE: &str = "STOP";
 const WINDOW: Duration = Duration::from_millis(100);
 const EARLY_CAPTURE_END: Duration = Duration::from_secs(5);
+/// Written into a session whose recording failed (no sound, microphone error). The widget's restart
+/// recovery skips such folders, so the same failure is not repeated at every launch.
+pub const RECORDING_FAILED: &str = "RECORDING_FAILED";
 const SILENT_TRACK_DB: f64 = -50.0;
 
 #[derive(Debug, Clone, Default)]
@@ -239,6 +242,7 @@ fn record_inner(cfg: &Config, opts: &RecordOptions, on_status: impl Fn(Status)) 
             || me_stderr.contains("permission")
             || me_stderr.contains("audio stream"));
     if mic_problem {
+        mark_failed(&session);
         return Err(Failure::attach(
             anyhow!(
                 "microphone capture failed (stderr_bytes={})",
@@ -249,6 +253,7 @@ fn record_inner(cfg: &Config, opts: &RecordOptions, on_status: impl Fn(Status)) 
         ));
     }
     if reason == StopReason::CaptureEnded && stopped_at <= EARLY_CAPTURE_END {
+        mark_failed(&session);
         return Err(Failure::attach(
             anyhow!(
                 "capture ended within the first seconds (stderr_bytes={})",
@@ -259,6 +264,7 @@ fn record_inner(cfg: &Config, opts: &RecordOptions, on_status: impl Fn(Status)) 
         ));
     }
     if silent == [true, true] {
+        mark_failed(&session);
         return Err(Failure::attach(
             anyhow!("both audio tracks were silent"),
             ErrorKind::NoSound,
@@ -282,6 +288,16 @@ fn record_inner(cfg: &Config, opts: &RecordOptions, on_status: impl Fn(Status)) 
         reason,
     });
     Ok(session)
+}
+
+/// Leaves the folder for debugging but keeps it out of the notes queue.
+fn mark_failed(session: &Path) {
+    if let Err(err) = fs::write(session.join(RECORDING_FAILED), "") {
+        logging::warn(
+            "record",
+            &format!("could not mark the failed session: {err}"),
+        );
+    }
 }
 
 fn stop_reason_name(reason: StopReason) -> &'static str {

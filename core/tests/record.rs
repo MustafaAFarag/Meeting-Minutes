@@ -336,6 +336,7 @@ fn early_capture_ended_is_no_sound_instead_of_success() {
     let raw: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(session.join("session.json")).unwrap()).unwrap();
     assert_eq!(raw["stop_reason"], "capture_ended");
+    assert!(session.join(mn_core::record::RECORDING_FAILED).exists());
     assert!(
         statuses.is_empty(),
         "a failed recording has no stopped status"
