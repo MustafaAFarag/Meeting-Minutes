@@ -49,6 +49,11 @@ impl RunState {
         self.recording.store(on, Ordering::SeqCst);
     }
 
+    /// A recording owns the slot, including the moment it is opening or being saved.
+    pub fn is_recording(&self) -> bool {
+        self.recording.load(Ordering::SeqCst) || self.active.load(Ordering::SeqCst)
+    }
+
     /// Asks a running recording to stop.
     pub fn request_stop(&self) -> Result<(), String> {
         if !self.recording.load(Ordering::SeqCst) {
@@ -123,6 +128,20 @@ mod tests {
         state.interrupt.store(true, Ordering::SeqCst);
         let _guard = state.begin().unwrap();
         assert!(!state.interrupt.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_held_slot_or_the_recording_flag_blocks_an_update() {
+        let state = RunState::default();
+        assert!(!state.is_recording());
+        let guard = state.begin().unwrap();
+        assert!(state.is_recording());
+        drop(guard);
+        assert!(!state.is_recording());
+        state.set_recording(true);
+        assert!(state.is_recording());
+        state.set_recording(false);
+        assert!(!state.is_recording());
     }
 
     #[test]
