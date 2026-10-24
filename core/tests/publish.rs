@@ -184,6 +184,9 @@ fn staging_dir_has_the_page_the_index_and_only_the_pending_meetings() {
     assert!(prompt.contains(
         "If the publish is still refused because some files were not read, read each path it names with action read and path"
     ));
+    assert!(prompt.contains(
+        "If it is refused because you had not viewed the live version, or because the live page differs from ./index.html, read it again with action read (no path) and publish again exactly the same way"
+    ));
     assert!(prompt
         .ends_with("Reply with only OK plus the list of published files, or the exact error."));
     let files = files_map(prompt);
