@@ -116,6 +116,7 @@ echo "Release $TAG (current version: $CURRENT)"
 echo "  $CORE_TOML                    version $CURRENT -> $VERSION"
 echo "  $APP_TOML        version $APP_CURRENT -> $VERSION"
 echo "  $TAURI_CONF  version $TAURI_CURRENT -> $VERSION"
+echo "  artifact/index.html                PAGE_VERSION -> $VERSION"
 echo "  core/Cargo.lock, app/src-tauri/Cargo.lock   refreshed offline (cargo update --workspace --offline), other crates unchanged"
 if printf '%s' "$HEADING" | grep -q 'unreleased'; then
   echo "  CHANGELOG.md                         '$HEADING' -> '## $TAG - $TODAY'"
@@ -140,6 +141,10 @@ rm -f "$TAURI_CONF.release.bak"
 [ "$(package_version "$CORE_TOML")" = "$VERSION" ] || die "Could not set the version in $CORE_TOML."
 [ "$(package_version "$APP_TOML")" = "$VERSION" ] || die "Could not set the version in $APP_TOML."
 [ "$(tauri_version)" = "$VERSION" ] || die "Could not set the version in $TAURI_CONF."
+# The My Meetings page shows its version in the footer, so a problem report can say which page was open.
+sed -i.release.bak -E "s/^(  var PAGE_VERSION = \")[^\"]*(\";)/\1$VERSION\2/" artifact/index.html
+rm -f artifact/index.html.release.bak
+grep -q "var PAGE_VERSION = \"$VERSION\";" artifact/index.html || die "Could not set PAGE_VERSION in artifact/index.html."
 
 # --workspace updates only this project's own packages in the lock file; the other crates keep their versions.
 (cd core && cargo update --workspace --offline) || die "cargo could not refresh core/Cargo.lock. The edits are in your working tree: undo them with 'git restore .'."
@@ -171,7 +176,7 @@ if [ -n "$GATE_FAILED" ]; then
 fi
 
 # ---------------------------------------------------------------- commit and tag
-git add "$CORE_TOML" core/Cargo.lock "$APP_TOML" app/src-tauri/Cargo.lock "$TAURI_CONF" CHANGELOG.md
+git add "$CORE_TOML" core/Cargo.lock "$APP_TOML" app/src-tauri/Cargo.lock "$TAURI_CONF" artifact/index.html CHANGELOG.md
 git commit -m "release: $TAG"
 git tag -a "$TAG" -m "Meeting Notes $TAG"
 
