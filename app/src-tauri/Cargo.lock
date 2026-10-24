@@ -2467,7 +2467,7 @@ dependencies = [
 
 [[package]]
 name = "meeting-notes-app"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "chrono",
  "dirs 6.0.0",
@@ -2488,7 +2488,7 @@ dependencies = [
 
 [[package]]
 name = "meeting-notes-core"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "chrono",
