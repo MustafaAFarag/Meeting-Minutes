@@ -118,7 +118,10 @@ fn report_contains_only_diagnostics_and_redacts_config_paths() {
 
     let file = fs::File::open(report).unwrap();
     let mut archive = ZipArchive::new(file).unwrap();
-    let names: Vec<_> = archive.file_names().map(str::to_string).collect();
+    let names: Vec<String> = archive
+        .file_names()
+        .map(|name| name.unwrap().into_owned())
+        .collect();
     for expected in [
         "meeting-notes.log",
         "meeting-notes.log.1",
