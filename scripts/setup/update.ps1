@@ -264,11 +264,18 @@ function Invoke-Update {
         Stop-Failed ('Could not check for updates: ' + (Get-LastLine $fetch.Lines) + '. Check the internet connection.')
         return
     }
-    $nt = Invoke-Git @('for-each-ref', '--sort=-v:refname', '--count=1', '--format=%(refname:short)', 'refs/tags/v*')
+    $nt = Invoke-Git @('for-each-ref', '--sort=-v:refname', '--format=%(refname:short)', 'refs/tags/v*')
     $newest = ''
-    if ($nt.Code -eq 0) { $newest = ([string]($nt.Lines | Select-Object -First 1)).Trim() }
+    # Only real release tags (vX.Y.Z) count.
+    if ($nt.Code -eq 0) {
+        $newest = [string]($nt.Lines | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ -match '^v\d+\.\d+\.\d+$' } | Select-Object -First 1)
+    }
     if (-not $newest) { Stop-Failed 'No release was found.'; return }
     Write-Log "Newest release: $newest"
+    # Never move backwards: a newest tag that is not newer than the installed one is "up to date".
+    if (($script:From -match '^v\d+\.\d+\.\d+$') -and ([version]$newest.Substring(1) -le [version]$script:From.Substring(1))) {
+        $newest = $script:From
+    }
 
     # 3. up to date
     $script:To = $newest

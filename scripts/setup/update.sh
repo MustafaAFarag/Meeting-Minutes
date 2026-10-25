@@ -178,11 +178,29 @@ if ! GIT_OUT="$(git_in_repo fetch --tags --force origin 2>&1)"; then
   log "git fetch failed: $GIT_OUT"
   fail "Could not check for updates: $(printf '%s\n' "$GIT_OUT" | last_line). Check the internet connection."
 fi
-NEWEST="$(git_in_repo for-each-ref --sort=-v:refname --count=1 --format='%(refname:short)' 'refs/tags/v*' 2>/dev/null | head -n 1)" || NEWEST=""
+# Only real release tags (vX.Y.Z) count: awk, not head, so for-each-ref never gets SIGPIPE under pipefail.
+NEWEST="$(git_in_repo for-each-ref --sort=-v:refname --format='%(refname:short)' 'refs/tags/v*' 2>/dev/null |
+  awk '!n && /^v[0-9]+\.[0-9]+\.[0-9]+$/ { print; n = 1 }')" || NEWEST=""
 [ -n "$NEWEST" ] || fail "No release was found."
 log "Newest release: $NEWEST"
 
+# version_gt vA.B.C vX.Y.Z: true when the first is newer.
+version_gt() {
+  local a b i
+  IFS=. read -r -a a <<<"${1#v}"
+  IFS=. read -r -a b <<<"${2#v}"
+  for i in 0 1 2; do
+    [ "$((10#${a[$i]}))" -gt "$((10#${b[$i]}))" ] && return 0
+    [ "$((10#${a[$i]}))" -lt "$((10#${b[$i]}))" ] && return 1
+  done
+  return 1
+}
+
 # ---------------------------------------------------------------- 3. up to date
+# Never move backwards: a newest tag that is not newer than the installed one is "up to date".
+if [[ "$FROM" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] && ! version_gt "$NEWEST" "$FROM"; then
+  NEWEST="$FROM"
+fi
 if [ "$NEWEST" = "$FROM" ]; then
   TO="$NEWEST"
   finish "up_to_date" "$TO" ""

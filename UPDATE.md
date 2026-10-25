@@ -50,7 +50,7 @@ It prints a tag like `v0.1.5`. Note it as the **old tag**. If it fails (an old c
 
 `git -C "<dir>" for-each-ref --sort=-v:refname --count=1 --format="%(refname:short)" "refs/tags/v*"`
 
-It prints the **newest tag**, for example `v0.1.6`. If nothing is printed, go to "If it fails" (reason: no release found).
+It prints the **newest tag**, for example `v0.1.6`. It must be `v` and three numbers with dots; anything else (like `vtest` or `v1.0.0-rc1`) is not a release: stop and report "No release found. Ask the developer." If nothing is printed, go to "If it fails" (reason: no release found).
 
 If the newest tag **equals the old tag**: tell the user **"You already have the newest version (v0.1.6)."** (with the real tag). Still run step 7 (`mn doctor`) and tell them the result in one line; if a FAIL line shows, fix it with `SETUP.md` > Troubleshooting > "`mn doctor` FAIL lines". Then stop.
 

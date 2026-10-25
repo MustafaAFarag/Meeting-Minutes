@@ -37,7 +37,7 @@ Find the home folder: macOS / Linux `printenv HOME`, Windows `$env:USERPROFILE`.
 
 `git -C "<dir>" for-each-ref --sort=-v:refname --count=1 --format="%(refname:short)" "refs/tags/v*"`
 
-It prints something like `v0.1.6`. Then: `git -C "<dir>" checkout -f v0.1.6` (use the tag you got). If no tag came back, stop and report: "No release found. Ask the developer."
+It prints something like `v0.1.6`. It must be `v` and three numbers with dots; anything else (like `vtest` or `v1.0.0-rc1`) is not a release: stop and report "No release found. Ask the developer." Then: `git -C "<dir>" checkout -f v0.1.6` (use the tag you got). If no tag came back, stop and report: "No release found. Ask the developer."
 
 ## 1. Detect the OS
 
