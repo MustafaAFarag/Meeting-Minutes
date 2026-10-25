@@ -14,8 +14,10 @@ DEFAULT_BASE="https://github.com/MustafaAFarag/Meeting-Minutes/releases/latest/d
 TAG_BASE="https://github.com/MustafaAFarag/Meeting-Minutes/releases/download"
 CLAUDE_INSTALL_URL="https://claude.ai/install.sh"
 WHISPER_URL="https://github.com/ggml-org/whisper.cpp/releases/download/b5130/whisper-bin-ubuntu-x64.tar.gz"
-MODEL_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
-VAD_URL="https://huggingface.co/ggml-org/whisper-vad/resolve/main"
+WHISPER_SHA="53e7fd8b5764edad916b8848dd0af6abb1ff1d3b86c899e79c78652412536c32"
+# Pinned to a commit, and every file is checked against its SHA-256 below.
+MODEL_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1"
+VAD_URL="https://huggingface.co/ggml-org/whisper-vad/resolve/9ffd54a1e1ee413ddf265af9913beaf518d1639b"
 TOTAL=8
 
 NAME=""
@@ -256,15 +258,58 @@ download() {
   mv -f "$2.part" "$2"
 }
 
-# fetch_release <file name> <dest>: from the release base (a URL or a local folder).
+# sha256 <file>: prints its SHA-256.
+sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi
+}
+
+# check_sha256 <file> <expected> <name>: removes the file and stops when it is not the expected file.
+check_sha256() {
+  [ "$(sha256 "$1")" = "$2" ] && return 0
+  rm -f "$1"
+  die "The download of $3 was not the expected file. Run this script again. If it happens again, tell Mustafa."
+}
+
+# Releases before v0.1.12 were published without SHA256SUMS.
+tag_has_no_sums() {
+  [[ "$RELEASE_TAG" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] || return 1
+  [ "$((10#${BASH_REMATCH[1]}))" -eq 0 ] || return 1
+  [ "$((10#${BASH_REMATCH[2]}))" -lt 1 ] && return 0
+  [ "$((10#${BASH_REMATCH[2]}))" -eq 1 ] && [ "$((10#${BASH_REMATCH[3]}))" -lt 12 ]
+}
+
+# RELEASE_SUMS: the release's SHA256SUMS file, or "none" (a pre-v0.1.12 tag, or a local folder without one).
+RELEASE_SUMS=""
+load_release_sums() {
+  [ -z "$RELEASE_SUMS" ] || return 0
+  if [ -d "$RELEASE_BASE" ]; then
+    if [ -f "$RELEASE_BASE/SHA256SUMS" ]; then RELEASE_SUMS="$RELEASE_BASE/SHA256SUMS"; else RELEASE_SUMS="none"; fi
+  elif tag_has_no_sums; then
+    RELEASE_SUMS="none"
+  else
+    mkdir -p "$DATA_DIR"
+    download "$RELEASE_BASE/SHA256SUMS" "$DATA_DIR/SHA256SUMS"
+    RELEASE_SUMS="$DATA_DIR/SHA256SUMS"
+  fi
+}
+
+# fetch_release <file name> <dest>: from the release base (a URL or a local folder), checked against
+# the release's SHA256SUMS before it replaces <dest>.
 fetch_release() {
+  local expected
+  load_release_sums
   if [ -d "$RELEASE_BASE" ]; then
     [ -f "$RELEASE_BASE/$1" ] || die "$RELEASE_BASE has no file named $1."
     cp "$RELEASE_BASE/$1" "$2.part"
-    mv -f "$2.part" "$2"
   else
-    download "$RELEASE_BASE/$1" "$2"
+    download "$RELEASE_BASE/$1" "$2.part"
   fi
+  if [ "$RELEASE_SUMS" != "none" ]; then
+    expected="$(awk -v n="$1" '$2 == n { print $1 }' "$RELEASE_SUMS")"
+    [ -n "$expected" ] || { rm -f "$2.part"; die "The release has no checksum for $1. Tell Mustafa."; }
+    check_sha256 "$2.part" "$expected" "$1"
+  fi
+  mv -f "$2.part" "$2"
 }
 
 file_size() {
@@ -391,6 +436,7 @@ else
   mkdir -p "$DATA_DIR/whisper"
   echo "Downloading whisper (about 15 MB)..."
   download "$WHISPER_URL" "$DATA_DIR/whisper.tar.gz"
+  check_sha256 "$DATA_DIR/whisper.tar.gz" "$WHISPER_SHA" "whisper"
   tar -xzf "$DATA_DIR/whisper.tar.gz" -C "$DATA_DIR/whisper" || die "Could not unpack the whisper download. Run this script again."
   rm -f "$DATA_DIR/whisper.tar.gz"
   WHISPER="$(find "$DATA_DIR/whisper" -name whisper-cli -type f | head -n 1)"
@@ -407,8 +453,10 @@ if [ -n "$WHISPER_MODEL_OVERRIDE" ]; then
 else
   if [ "$MODEL" = "turbo" ]; then
     MODEL_FILE="ggml-large-v3-turbo-q5_0.bin"; MODEL_MIN=520000000; MODEL_MB=574
+    MODEL_SHA="394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2"
   else
     MODEL_FILE="ggml-small.bin"; MODEL_MIN=440000000; MODEL_MB=488
+    MODEL_SHA="1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b"
   fi
   mkdir -p "$DATA_DIR/models"
   WMODEL="$DATA_DIR/models/$MODEL_FILE"
@@ -416,19 +464,21 @@ else
     echo "Already downloaded: $WMODEL"
   else
     echo "Downloading $MODEL_FILE (about $MODEL_MB MB, a few minutes)..."
-    download "$MODEL_URL/$MODEL_FILE" "$WMODEL"
-    [ "$(file_size "$WMODEL")" -ge "$MODEL_MIN" ] || die "The speech model download is incomplete. Run this script again."
+    download "$MODEL_URL/$MODEL_FILE" "$WMODEL.new"
+    check_sha256 "$WMODEL.new" "$MODEL_SHA" "$MODEL_FILE"
+    mv -f "$WMODEL.new" "$WMODEL"
   fi
 fi
 
 # Silero VAD (about 1 MB): whisper then skips silence, so it cannot invent lines there, and
 # "auto" picks the language from the first speech instead of from a silent start.
-VAD_FILE="ggml-silero-v5.1.2.bin"; VAD_SIZE=885098
+VAD_FILE="ggml-silero-v5.1.2.bin"; VAD_SIZE=885098; VAD_SHA="29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf"
 mkdir -p "$DATA_DIR/models"
 VMODEL="$DATA_DIR/models/$VAD_FILE"
 if [ ! -f "$VMODEL" ] || [ "$(file_size "$VMODEL")" != "$VAD_SIZE" ]; then
-  download "$VAD_URL/$VAD_FILE" "$VMODEL"
-  [ "$(file_size "$VMODEL")" = "$VAD_SIZE" ] || die "The VAD model download is incomplete. Run this script again."
+  download "$VAD_URL/$VAD_FILE" "$VMODEL.new"
+  check_sha256 "$VMODEL.new" "$VAD_SHA" "$VAD_FILE"
+  mv -f "$VMODEL.new" "$VMODEL"
 fi
 
 # ---------------------------------------------------------------- 6. config

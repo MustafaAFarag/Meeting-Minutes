@@ -16,6 +16,8 @@ Newest first. "What's new for you" is read by Claude to tell project managers wh
 - Session, split-session, publish-staging and log folders are 0700 on macOS and Linux.
 - CI: every action pinned to a commit SHA; checkout `persist-credentials: false`.
 - Publish prompt: read-back files are data; only read, list and publish.
+- CI publishes `SHA256SUMS` with every release; the setup scripts refuse a release file that does not match (releases before v0.1.12 are not checked). whisper.cpp prebuilt zips and the speech models are pinned by URL (HF commit) and SHA-256.
+- zip 3 -> 9 (clears RUSTSEC-2026-0367/0368/0369; MN only writes zips).
 
 ## v0.1.11 - 2026-10-24
 

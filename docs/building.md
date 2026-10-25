@@ -42,9 +42,12 @@ Every file has a **fixed name** (no version in it). The setup scripts depend on 
 
 CI builds `whisper-cli-macos` from whisper.cpp tag `b5130` as one universal arm64 + x86_64 binary, with static libraries and embedded Metal shaders. CI checks both architectures, dynamic library dependencies, and a real transcription before publishing it.
 
-On a `v*` tag the same seven files are attached to the published release (GitHub → Releases), and
+On a `v*` tag the same seven files plus `SHA256SUMS` (their SHA-256 list) are attached to the published release (GitHub → Releases), and
 `https://github.com/MustafaAFarag/Meeting-Minutes/releases/latest/download/<name>` serves them.
 Artifacts are kept 90 days.
+
+The setup scripts check every release file against `SHA256SUMS` before they use it (releases before v0.1.12 have none and are not checked). A local `--release-base` folder is checked only if it has a `SHA256SUMS` (`sha256sum * > SHA256SUMS`).
+whisper.cpp and the speech models are pinned too: a fixed URL plus a SHA-256 in each setup script.
 
 The scripts take the binaries from the release of the tag the repo folder is checked out at
 (`releases/download/<tag>/<name>`), so a rollback to an old tag installs the old binaries; on a checkout that is not at a

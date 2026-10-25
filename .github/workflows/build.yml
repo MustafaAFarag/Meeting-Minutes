@@ -237,6 +237,15 @@ jobs:
       - name: List files
         run: find dist -type f
 
+      # The setup scripts check every release file against this list before they run it.
+      - name: Checksums
+        run: |
+          (cd dist && find . -type f -exec sha256sum {} + | sed -E 's#  \./[^/]+/#  #' | sort -k2) > SHA256SUMS
+          dupes="$(awk '{print $2}' SHA256SUMS | sort | uniq -d)"
+          if [ -n "$dupes" ]; then echo "::error::Duplicate release file names: $dupes"; exit 1; fi
+          mkdir -p dist/checksums && mv SHA256SUMS dist/checksums/SHA256SUMS
+          cat dist/checksums/SHA256SUMS
+
       # Published (not draft) so releases/latest/download/... works for the setup scripts.
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:

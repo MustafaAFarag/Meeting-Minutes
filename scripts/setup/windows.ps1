@@ -162,8 +162,10 @@ $ProgressPreference = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
 $WhisperUrl = 'https://github.com/ggml-org/whisper.cpp/releases/download/b5130/whisper-bin-x64.zip'
-$ModelUrl = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main'
-$VadUrl = 'https://huggingface.co/ggml-org/whisper-vad/resolve/main'
+$WhisperSha = 'f9ec6c52a2e949b62ab51fa21d0d497958f9e41c3010c157c4e42932d5316f3c'
+# Pinned to a commit, and every file is checked against its SHA-256 below.
+$ModelUrl = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1'
+$VadUrl = 'https://huggingface.co/ggml-org/whisper-vad/resolve/9ffd54a1e1ee413ddf265af9913beaf518d1639b'
 $ClaudeInstallUrl = 'https://claude.ai/install.ps1'
 $LatestBase = 'https://github.com/MustafaAFarag/Meeting-Minutes/releases/latest/download'
 $TagBase = 'https://github.com/MustafaAFarag/Meeting-Minutes/releases/download'
@@ -256,14 +258,53 @@ function Get-Download([string]$Url, [string]$Dest) {
     Move-Item -LiteralPath $part -Destination $Dest -Force
 }
 
-# A file from the release base: a URL or a local folder.
+# Removes the file and stops when it is not the expected file.
+function Assert-Sha256([string]$Path, [string]$Expected, [string]$Name) {
+    $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
+    if ($actual -ne $Expected.ToLowerInvariant()) {
+        Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+        Fail "The download of $Name was not the expected file. Run this script again. If it happens again, tell Mustafa."
+    }
+}
+
+# The release's SHA256SUMS as name -> hash. Releases before v0.1.12 and local folders without the
+# file have none ($script:HasSums is then $false).
+$script:ReleaseSums = $null
+$script:HasSums = $false
+function Read-ReleaseSums {
+    if ($null -ne $script:ReleaseSums) { return }
+    $script:ReleaseSums = @{}
+    $file = ''
+    if (($ReleaseBase -notmatch '^https?://') -and (Test-Path -LiteralPath $ReleaseBase -PathType Container)) {
+        $local = Join-Path $ReleaseBase 'SHA256SUMS'
+        if (Test-Path -LiteralPath $local) { $file = $local }
+    } elseif (-not (($ReleaseTag -match '^v\d+\.\d+\.\d+$') -and ([version]$ReleaseTag.Substring(1) -lt [version]'0.1.12'))) {
+        $file = Join-Path $DataDir 'SHA256SUMS'
+        Get-Download ($ReleaseBase.TrimEnd('/') + '/SHA256SUMS') $file
+    }
+    if (-not $file) { return }
+    foreach ($line in @(Get-Content -LiteralPath $file)) {
+        if ($line -match '^([0-9a-fA-F]{64})\s+\*?(\S+)\s*$') { $script:ReleaseSums[$Matches[2]] = $Matches[1] }
+    }
+    $script:HasSums = $true
+}
+
+# A file from the release base (a URL or a local folder), checked against the release's SHA256SUMS.
 function Get-Release([string]$FileName, [string]$Dest) {
+    Read-ReleaseSums
     if (($ReleaseBase -notmatch '^https?://') -and (Test-Path -LiteralPath $ReleaseBase -PathType Container)) {
         $src = Join-Path $ReleaseBase $FileName
         if (-not (Test-Path -LiteralPath $src)) { Fail "$ReleaseBase has no file named $FileName." }
         Copy-Item -LiteralPath $src -Destination $Dest -Force
     } else {
         Get-Download ($ReleaseBase.TrimEnd('/') + '/' + $FileName) $Dest
+    }
+    if ($script:HasSums) {
+        if (-not $script:ReleaseSums.ContainsKey($FileName)) {
+            Remove-Item -LiteralPath $Dest -Force -ErrorAction SilentlyContinue
+            Fail "The release has no checksum for $FileName. Tell Mustafa."
+        }
+        Assert-Sha256 $Dest $script:ReleaseSums[$FileName] $FileName
     }
 }
 
@@ -502,6 +543,7 @@ try {
                 $zip = Join-Path $DataDir 'whisper.zip'
                 Write-Host 'Downloading whisper (about 15 MB)...'
                 Get-Download $WhisperUrl $zip
+                Assert-Sha256 $zip $WhisperSha 'whisper'
                 if (Test-Path -LiteralPath $WhisperDir) { Remove-Item -LiteralPath $WhisperDir -Recurse -Force }
                 New-Item -ItemType Directory -Force -Path $WhisperDir | Out-Null
                 Expand-Archive -LiteralPath $zip -DestinationPath $WhisperDir -Force
@@ -525,8 +567,10 @@ try {
     } else {
         if ($Model -eq 'turbo') {
             $modelFile = 'ggml-large-v3-turbo-q5_0.bin'; $modelMin = 520000000; $modelMb = 574
+            $modelSha = '394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2'
         } else {
             $modelFile = 'ggml-small.bin'; $modelMin = 440000000; $modelMb = 488
+            $modelSha = '1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b'
         }
         $modelDir = Join-Path $DataDir 'models'
         New-Item -ItemType Directory -Force -Path $modelDir | Out-Null
@@ -535,10 +579,10 @@ try {
             Write-Host "Already downloaded: $ModelPath"
         } else {
             Write-Host "Downloading $modelFile (about $modelMb MB, a few minutes)..."
-            Get-Download ($ModelUrl + '/' + $modelFile) $ModelPath
-            if ((Get-Item -LiteralPath $ModelPath).Length -lt $modelMin) {
-                Fail 'The speech model download is incomplete. Run this script again.'
-            }
+            $modelNew = $ModelPath + '.new'
+            Get-Download ($ModelUrl + '/' + $modelFile) $modelNew
+            Assert-Sha256 $modelNew $modelSha $modelFile
+            Move-Item -LiteralPath $modelNew -Destination $ModelPath -Force
         }
     }
 
@@ -546,14 +590,15 @@ try {
     # "auto" picks the language from the first speech instead of from a silent start.
     $vadFile = 'ggml-silero-v5.1.2.bin'
     $vadSize = 885098
+    $vadSha = '29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf'
     $vadDir = Join-Path $DataDir 'models'
     New-Item -ItemType Directory -Force -Path $vadDir | Out-Null
     $VadPath = Join-Path $vadDir $vadFile
     if (-not ((Test-Path -LiteralPath $VadPath) -and ((Get-Item -LiteralPath $VadPath).Length -eq $vadSize))) {
-        Get-Download ($VadUrl + '/' + $vadFile) $VadPath
-        if ((Get-Item -LiteralPath $VadPath).Length -ne $vadSize) {
-            Fail 'The VAD model download is incomplete. Run this script again.'
-        }
+        $vadNew = $VadPath + '.new'
+        Get-Download ($VadUrl + '/' + $vadFile) $vadNew
+        Assert-Sha256 $vadNew $vadSha $vadFile
+        Move-Item -LiteralPath $vadNew -Destination $VadPath -Force
     }
 
     # ------------------------------------------------------------ 6. config

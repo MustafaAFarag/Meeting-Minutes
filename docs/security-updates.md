@@ -13,7 +13,7 @@ What MN does ship:
 | Rust crates (core + app) | `core/Cargo.lock`, `app/src-tauri/Cargo.lock` | `cargo audit` in `core/` and `app/src-tauri/` |
 | Tauri + WebView glue (tauri, wry, tao) | `app/src-tauri/Cargo.toml` | `cargo audit`, and the Tauri security advisories on GitHub |
 | System WebView | the user's OS (WebView2 on Windows, WKWebView on Mac, WebKitGTK on Linux) | OS updates; nothing to ship |
-| whisper.cpp | the `b5130` tag in `.github/workflows/build.yml` (Mac) and the setup scripts | whisper.cpp releases page |
+| whisper.cpp + speech models | the `b5130` tag in `.github/workflows/build.yml` (Mac); URL + SHA-256 constants in the 3 setup scripts (`WHISPER_SHA`, `MODEL_SHA`, `VAD_SHA`) | whisper.cpp releases page. When you change a URL, change its SHA-256 too, or installs stop with "not the expected file" |
 | Swift helper | `mac/audiotap/Package.swift` | Swift / macOS security notes |
 | GitHub Actions | `uses:` lines in `.github/workflows/build.yml` | the action's releases page |
 
