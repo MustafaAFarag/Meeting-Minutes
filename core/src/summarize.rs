@@ -20,7 +20,9 @@ const TEMPLATE: &str = include_str!("../../prompts/meeting-card.md");
 const SCHEMA: &str = include_str!("../../prompts/card.schema.json");
 const M365_STEPS: &str = include_str!("../../docs/m365-step.md");
 
-const CLAUDE_TOOLS: &str = "Read,mcp__claude_ai_Microsoft_365__outlook_calendar_search,mcp__claude_ai_Microsoft_365__chat_message_search,mcp__claude_ai_Microsoft_365__sharepoint_search";
+/// The card run gets no built-in tools (`--tools ""`): the transcript is in the prompt, so it needs no file access.
+/// Only these read-only Microsoft 365 searches are allowed.
+const CLAUDE_TOOLS: &str = "mcp__claude_ai_Microsoft_365__outlook_calendar_search,mcp__claude_ai_Microsoft_365__chat_message_search,mcp__claude_ai_Microsoft_365__sharepoint_search";
 
 pub const CARD_FILE: &str = "card.json";
 pub const MEETING_FILE: &str = "meeting.json";
@@ -83,11 +85,12 @@ pub fn fill_template(template: &str, vars: &[(&str, &str)]) -> String {
     out
 }
 
-/// `session_dir` should be absolute: the prompt tells the model where to read from.
+/// `session_dir` should be absolute: the prompt names it. The transcript goes inside the prompt as data.
 pub fn build_prompt(
     cfg: &Config,
     session_dir: &Path,
     info: &SessionInfo,
+    transcript: &str,
     engine: Engine,
 ) -> Result<String> {
     let started = DateTime::parse_from_rfc3339(&info.started_at)
@@ -104,6 +107,7 @@ pub fn build_prompt(
             ("TODAY", &today),
             ("MY_NAME", cfg.my_name.as_deref().unwrap_or("unknown")),
             ("M365_STEP", &step),
+            ("TRANSCRIPT", transcript.trim_end()),
         ],
     ))
 }
@@ -183,7 +187,7 @@ fn summarize_inner(
         engine: Engine::Claude,
         reason: None,
     });
-    let claude_prompt = build_prompt(cfg, &session_dir, &info, Engine::Claude)?;
+    let claude_prompt = build_prompt(cfg, &session_dir, &info, &transcript, Engine::Claude)?;
     let (engine, output) = match run_claude(cfg, &session_dir, &claude_prompt) {
         Ok(output) => (Engine::Claude, output),
         Err(claude_err) => {
@@ -208,7 +212,7 @@ fn summarize_inner(
                 engine: Engine::Codex,
                 reason: Some(reason.to_string()),
             });
-            let codex_prompt = build_prompt(cfg, &session_dir, &info, Engine::Codex)?;
+            let codex_prompt = build_prompt(cfg, &session_dir, &info, &transcript, Engine::Codex)?;
             match run_codex(cfg, &session_dir, &codex_prompt) {
                 Ok(output) => (Engine::Codex, output),
                 Err(codex_err) => {
@@ -594,6 +598,7 @@ fn run_claude(cfg: &Config, session_dir: &Path, prompt: &str) -> Result<Value> {
     let mut cmd = claude_command(cfg);
     cmd.args(["-p", "--output-format", "json", "--json-schema"])
         .arg(schema.to_string())
+        .args(["--tools", ""])
         .args(["--allowedTools", CLAUDE_TOOLS])
         .args(["--model", &cfg.card_model, "--effort", &cfg.card_effort])
         .current_dir(session_dir);
@@ -636,14 +641,20 @@ fn run_codex_with_files(
 ) -> Result<Value> {
     fs::write(schema_path, SCHEMA).with_context(|| format!("writing {}", schema_path.display()))?;
     let mut cmd = command(&cfg.codex_cli);
-    cmd.args(["exec", "--skip-git-repo-check", "-C"])
-        .arg(session_dir)
-        .arg("--output-schema")
-        .arg(schema_path)
-        .arg("-o")
-        .arg(out_path)
-        .arg("-")
-        .current_dir(session_dir);
+    cmd.args([
+        "exec",
+        "--skip-git-repo-check",
+        "--sandbox",
+        "read-only",
+        "-C",
+    ])
+    .arg(session_dir)
+    .arg("--output-schema")
+    .arg(schema_path)
+    .arg("-o")
+    .arg(out_path)
+    .arg("-")
+    .current_dir(session_dir);
     let out = run(&mut cmd, Some(prompt))
         .with_context(|| format!("could not run codex_cli {}", cfg.codex_cli.display()))?;
     logging::info(
