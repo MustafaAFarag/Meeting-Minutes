@@ -387,7 +387,11 @@ a { color: var(--ctl); text-underline-offset: 2px; }
     p.waits = sec("Waiting on others", (m.waiting_on || []).length ? '<ul class="items">' +
       m.waiting_on.map(function (t, i) { return inCardItem(m, { key: "wait-" + i, text: t.text, due: t.due, done: !!done["wait-" + i] }, t.who); }).join("") + "</ul>" : "");
     p.links = sec("Related links", (m.related_links || []).length ? '<div class="chips">' +
-      m.related_links.map(function (l) { return '<a class="chip link" href="' + esc(l.url) + '" target="_blank" rel="noopener noreferrer">' + esc(l.title || l.url) + "</a>"; }).join("") + "</div>" : "");
+      m.related_links.map(function (l) {
+        // Links are model-written from what people said: only https:// becomes clickable.
+        if (!/^https:\/\//i.test(String(l.url || ""))) return '<span class="chip">' + esc(l.title || l.url) + "</span>";
+        return '<a class="chip link" href="' + esc(l.url) + '" target="_blank" rel="noopener noreferrer">' + esc(l.title || l.url) + "</a>";
+      }).join("") + "</div>" : "");
     p.people = sec("Attendees", (m.attendees || []).length ? '<div class="chips">' + m.attendees.map(function (a) { return '<span class="chip">' + esc(a) + "</span>"; }).join("") + "</div>" : "");
     p.tbtns = '<div class="btns tbtns"><button class="btn" data-tr="' + esc(m.id) + '">' + (trShown.has(m.id) ? "Hide transcript" : "Show transcript") + "</button>" +
       (downloads ? '<button class="btn fill" data-dl="' + esc(m.id) + '">Download transcript</button>' : "") + "</div>";
