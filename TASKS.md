@@ -107,5 +107,10 @@ The pilot PM (Mac) uses it on 5 real meetings in 1 week. Each card is correct (r
   - Updating: the app shows "Update available" and copies a prompt that points at `~/Meeting-Minutes/UPDATE.md`; the PM pastes it into Claude. Claude checks out the latest tag, re-runs setup with `--update`, runs `mn doctor`, and explains what is new from `CHANGELOG.md`.
   - The "Ask MM" popup uses the Storbi avatar (MM = the app's nickname, "my meetings").
 
+- 2026-10-25, security audit run 1 (report outside the repo, `~/security-audit-skill/mn/run-1/REPORT.md`; routine in `docs/security-updates.md`):
+  - Fixed in main (v0.1.12 unreleased): transcript as data with no file tools, https-only page links, exact-command allow rules + release-base limited to our releases, strict vX.Y.Z tags with no downgrade, 0700 session/log folders, CI actions pinned by SHA, publish prompt data rule.
+  - Accepted risk: the 2 pre-rewrite commits with the client/product name are still fetchable on GitHub by full ID. No GitHub Support purge: nobody has the IDs (not in the public event feed, 0 forks).
+  - Still open: zip 3 -> 9 bump (advisories unreachable), checksums/signed tags for releases, GitHub account 2FA/tag ruleset check by the owner.
+
 ## Blockers / open
 - Using speakers instead of headphones means the mic re-records the other side, so lines get duplicated. v1 says "use headphones"; dedup is a later task.

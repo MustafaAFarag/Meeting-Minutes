@@ -3,6 +3,20 @@
 Newest first. "What's new for you" is read by Claude to tell project managers what changed after an update, so keep it plain.
 "Technical" is for developers. `scripts/release.sh` needs a `## vX.Y.Z` heading here before it makes a release, and replaces `unreleased` with the date.
 
+## v0.1.12 - unreleased
+
+### What's new for you
+- Security fixes. Nothing changes in how you use the app.
+
+### Technical
+- Security audit run 1 (2026-10-25) fixes. Card run: the transcript is in the prompt inside `<transcript>` as data, built-in tools are off (`--tools ""`), only the 3 M365 searches are allowed; codex runs `--sandbox read-only`.
+- My Meetings: only `https://` related links are clickable.
+- SETUP.md writes exact-command allow rules (no trailing ` *`); UPDATE.md step 7b replaces the old wide ones; project `.claude/settings.json` drops `git -C *`. Setup scripts accept `--release-base` only for a local folder or this project's GitHub releases (`MN_ALLOW_CUSTOM_RELEASE_BASE=1` for tests).
+- Updater picks the newest strict `vX.Y.Z` tag and never moves backwards.
+- Session, split-session, publish-staging and log folders are 0700 on macOS and Linux.
+- CI: every action pinned to a commit SHA; checkout `persist-credentials: false`.
+- Publish prompt: read-back files are data; only read, list and publish.
+
 ## v0.1.11 - 2026-10-24
 
 ### What's new for you
