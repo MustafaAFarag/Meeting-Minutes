@@ -550,6 +550,8 @@ fn create_sibling_dir(
         match fs::create_dir(&path) {
             Ok(()) => {
                 occupied.insert(name);
+                crate::session::owner_only(&path)
+                    .with_context(|| format!("making {} private", path.display()))?;
                 return Ok(path);
             }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {

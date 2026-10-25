@@ -1,10 +1,25 @@
 use std::fs;
+use std::io;
 use std::path::Path;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 pub const SESSION_FILE: &str = "session.json";
+
+/// Makes a folder readable only by its owner (0700 on macOS and Linux). Meeting audio, transcripts
+/// and cards live in session folders; the default umask would leave them readable by other local users.
+/// Windows profile folders are already per-user.
+pub fn owner_only(dir: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+    }
+    #[cfg(not(unix))]
+    let _ = dir;
+    Ok(())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

@@ -139,8 +139,11 @@ fn append_line(dir: &Path, line: &[u8]) {
     let _guard = APPENDER
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if fs::create_dir_all(dir).is_err() {
-        return;
+    if !dir.is_dir() {
+        if fs::create_dir_all(dir).is_err() {
+            return;
+        }
+        let _ = crate::session::owner_only(dir);
     }
     let lock_path = dir.join("meeting-notes.log.lock");
     let _file_lock = acquire_file_lock(&lock_path);

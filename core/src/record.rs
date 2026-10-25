@@ -14,7 +14,7 @@ use crate::config::Config;
 use crate::failure::{classify, ErrorKind, Failure, Stage};
 use crate::levels::{WindowMeter, FLOOR_DB, SAMPLE_RATE, WINDOWS_PER_SECOND};
 use crate::logging::{self, session_name};
-use crate::session::{SessionInfo, StopReason, TrackSeconds};
+use crate::session::{owner_only, SessionInfo, StopReason, TrackSeconds};
 use crate::status::Status;
 
 /// The GUI stops a recording by creating this file in the session dir.
@@ -323,7 +323,10 @@ fn create_session_dir(notes_dir: &Path, started: DateTime<Local>) -> Result<Path
         };
         let dir = notes_dir.join(name);
         match fs::create_dir(&dir) {
-            Ok(()) => return Ok(dir),
+            Ok(()) => {
+                owner_only(&dir).with_context(|| format!("making {} private", dir.display()))?;
+                return Ok(dir);
+            }
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(e) => {
                 return Err(e).with_context(|| format!("creating session dir {}", dir.display()))
@@ -339,4 +342,22 @@ fn rfc3339(t: DateTime<Local>) -> String {
 
 fn round1(db: f64) -> f64 {
     (db * 10.0).round() / 10.0
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn session_dirs_are_private_to_the_owner() {
+        let notes = tempfile::tempdir().unwrap();
+        let started = Local::now();
+        let first = create_session_dir(notes.path(), started).unwrap();
+        let second = create_session_dir(notes.path(), started).unwrap();
+        for dir in [first, second] {
+            let mode = fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700, "{}", dir.display());
+        }
+    }
 }

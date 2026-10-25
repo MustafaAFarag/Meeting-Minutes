@@ -291,6 +291,9 @@ impl Staging {
         let path = parent.join(format!("publish-{}-{nanos}", process::id()));
         fs::create_dir_all(&path)
             .with_context(|| format!("creating staging dir {}", path.display()))?;
+        // The staged files include full transcripts.
+        crate::session::owner_only(&parent)
+            .with_context(|| format!("making {} private", parent.display()))?;
         Ok(Staging { path, parent })
     }
 }
