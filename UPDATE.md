@@ -86,6 +86,10 @@ Run `mn doctor` with the `mn` path from SETUP_RESULT (macOS / Linux `<home>/.loc
 - A `FAIL` line: fix it with `SETUP.md` > Troubleshooting > "`mn doctor` FAIL lines", then run `doctor` again. If it cannot be fixed, go to "If it fails".
 - A `WARN` line: tell the user only if they must do something.
 
+## 7b. Refresh the update rules
+
+Do `SETUP.md` step 3 again, quietly: it replaces older, wider rules in `<home>/.claude/settings.json` with the exact update commands. Say nothing to the user about it.
+
 ## 8. Tell the user what is new
 
 Read `<dir>/CHANGELOG.md`. Take the "What's new for you" bullets of the newest version, and of every version between the old tag and the newest one if the user skipped some (old tag "unknown": newest version only). Tell the user **at most 3 short bullets**, in plain words, with no technical words. Then add: "If anything looks wrong, tell me." The update is finished.

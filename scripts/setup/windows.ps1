@@ -352,6 +352,13 @@ try {
     if ($ReleaseBase) {
         $ReleaseBase = $ReleaseBase.TrimEnd('/')
         $ReleaseLabel = 'custom'
+        # The files are run right after the download: only this project's releases or a local folder.
+        $ownReleases = $TagBase.Substring(0, $TagBase.Length - '/download'.Length) + '/'
+        $isOwn = $ReleaseBase.StartsWith($ownReleases, [System.StringComparison]::OrdinalIgnoreCase)
+        $isFolder = ($ReleaseBase -notmatch '^[a-zA-Z][a-zA-Z0-9+.-]*://') -and (Test-Path -LiteralPath $ReleaseBase -PathType Container)
+        if ((-not $isOwn) -and (-not $isFolder) -and ($env:MN_ALLOW_CUSTOM_RELEASE_BASE -ne '1')) {
+            Fail '-ReleaseBase must be a local folder or a release of this project on GitHub.'
+        }
         Write-Host "Using release files from $ReleaseBase"
     } else {
         $ReleaseBase = $LatestBase

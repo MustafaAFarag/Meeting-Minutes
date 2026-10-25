@@ -65,30 +65,39 @@ It prints something like `v0.1.6`. Then: `git -C "<dir>" checkout -f v0.1.6` (us
 So that later updates run without permission prompts from any folder, add these rules to the user-level Claude Code settings file `<home>/.claude/settings.json` (Windows `<home>\.claude\settings.json`), under `permissions` > `allow`.
 
 - If the file does not exist, create it with `{"permissions":{"allow":[...]}}`. If it exists, read it, **keep everything already in it** (other keys, other rules), add only the rules below that are missing, and write it back as valid JSON. If it cannot be parsed, do not touch it: skip this step and tell the user nothing (updates will just ask for permission).
-- Use the **real absolute paths**: expand `<home>` and `<dir>` yourself. The rule text must be exactly the start of the command you will run, then ` *`. Quote paths the same way as in the commands (inside JSON write each `"` as `\"`; on Windows write each `\` as `\\`).
+- Use the **real absolute paths**: expand `<home>` and `<dir>` yourself. Write each rule exactly as shown: it is the whole command, not a prefix, so do not add ` *` or anything else (the only `*` are the ones shown). Quote paths the same way as in the commands (inside JSON write each `"` as `\"`; on Windows write each `\` as `\\`).
 - Use the rule type of the tool you run commands with (`Bash(...)`; if your shell tool is PowerShell, `PowerShell(...)`).
+- If the file already has an older Meeting Notes rule that ends in ` *` (for example `Bash(git -C "<dir>" *)` or `Bash(bash "<dir>/scripts/setup/mac.sh" *)`), remove it: it allowed more than these commands.
 
 **macOS** (for Linux use `linux.sh` in place of `mac.sh`):
 
 ```
-Bash(git -C "<dir>" *)
-Bash(bash "<dir>/scripts/setup/mac.sh" *)
-Bash("<home>/.local/bin/mn" doctor*)
-Bash("<home>/.local/bin/mn" init-page*)
-Bash("<home>/.local/bin/claude" auth *)
+Bash(git -C "<dir>" rev-parse --show-toplevel)
+Bash(git -C "<dir>" describe --tags --exact-match)
+Bash(git -C "<dir>" fetch --tags --force origin)
+Bash(git -C "<dir>" for-each-ref --sort=-v:refname --count=1 --format="%(refname:short)" "refs/tags/v*")
+Bash(git -C "<dir>" checkout -f v*)
+Bash(bash "<dir>/scripts/setup/mac.sh" --update)
+Bash("<home>/.local/bin/mn" doctor)
+Bash("<home>/.local/bin/mn" init-page)
+Bash("<home>/.local/bin/claude" auth status)
 ```
 
 **Windows** (PowerShell commands):
 
 ```
-PowerShell(git -C "<dir>" *)
-PowerShell(powershell -ExecutionPolicy Bypass -File "<dir>\scripts\setup\windows.ps1" *)
-PowerShell(& "<home>\AppData\Local\MeetingNotes\bin\mn.exe" doctor*)
-PowerShell(& "<home>\AppData\Local\MeetingNotes\bin\mn.exe" init-page*)
-PowerShell(& "<home>\.local\bin\claude.exe" auth *)
+PowerShell(git -C "<dir>" rev-parse --show-toplevel)
+PowerShell(git -C "<dir>" describe --tags --exact-match)
+PowerShell(git -C "<dir>" fetch --tags --force origin)
+PowerShell(git -C "<dir>" for-each-ref --sort=-v:refname --count=1 --format="%(refname:short)" "refs/tags/v*")
+PowerShell(git -C "<dir>" checkout -f v*)
+PowerShell(powershell -ExecutionPolicy Bypass -File "<dir>\scripts\setup\windows.ps1" -Update)
+PowerShell(& "<home>\AppData\Local\MeetingNotes\bin\mn.exe" doctor)
+PowerShell(& "<home>\AppData\Local\MeetingNotes\bin\mn.exe" init-page)
+PowerShell(& "<home>\.local\bin\claude.exe" auth status)
 ```
 
-(If your shell tool for Windows is Bash, write `Bash(...)` instead of `PowerShell(...)`.) These rules cover only this program's own commands. Do not add anything broader (no `Bash(*)`, no `curl`, no `rm`).
+(If your shell tool for Windows is Bash, write `Bash(...)` instead of `PowerShell(...)`.) These rules cover only the exact update commands. Do not add anything broader (no `Bash(*)`, no ` *` at the end, no `curl`, no `rm`).
 
 ## 4. Check the Microsoft 365 connector
 

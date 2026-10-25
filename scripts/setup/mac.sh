@@ -226,6 +226,12 @@ done
 if [ -n "$RELEASE_BASE" ]; then
   RELEASE_BASE="${RELEASE_BASE%/}"
   RELEASE_LABEL="custom"
+  # The files are run right after the download: only this project's releases or a local folder.
+  case "$RELEASE_BASE" in
+    "${TAG_BASE%/download}"/*) ;;
+    *) [ -d "$RELEASE_BASE" ] || [ "${MN_ALLOW_CUSTOM_RELEASE_BASE:-}" = "1" ] ||
+      die "--release-base must be a local folder or a release of this project on GitHub." ;;
+  esac
 else
   RELEASE_BASE="$DEFAULT_BASE"
   RELEASE_LABEL="latest"
