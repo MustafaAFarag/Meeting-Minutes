@@ -8,9 +8,13 @@ who was there, decisions, and a to-do list. The cards collect on a private "My M
 
 1. Open the **Claude Desktop** app and click the **Code** tab.
 2. Choose **Local**, then choose any folder (your home folder is fine).
-3. Paste this and press Enter:
+3. Paste this sentence exactly as it is (copy button on the right) and press Enter:
 
-> Install Meeting Notes from https://github.com/MustafaAFarag/Meeting-Minutes by following its SETUP.md
+```
+Install Meeting Notes from https://github.com/MustafaAFarag/Meeting-Minutes by following its SETUP.md
+```
+
+The words "by following its SETUP.md" matter: without them Claude may only download the files and stop.
 
 Claude does the rest (about 1 GB download, 5 to 10 minutes). It installs what is missing (git, and the Claude sign-in the widget needs: you click **Authorize** once), asks for your full name once, installs everything, opens your
 My Meetings page, and walks you through a 1-minute test. Whenever Claude asks permission to run something, click **Always allow**.
