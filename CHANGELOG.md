@@ -3,6 +3,14 @@
 Newest first. "What's new for you" is read by Claude to tell project managers what changed after an update, so keep it plain.
 "Technical" is for developers. `scripts/release.sh` needs a `## vX.Y.Z` heading here before it makes a release, and replaces `unreleased` with the date.
 
+## v0.1.13 - unreleased
+
+### What's new for you
+- **My to-dos** has a **+ Add to-do** button: write your own to-do, pick a due date if you want, and link it to a meeting, or choose **Other** and type your own label (for example Personal).
+
+### Technical
+- Own to-dos live in the page db collection `tasks` (`{text, due, meeting, label, done, at}`), browser storage when the db is unavailable. They count in Due today / Overdue / Open to-dos, move to Done when ticked, and have a delete button.
+
 ## v0.1.12 - 2026-10-26
 
 ### What's new for you

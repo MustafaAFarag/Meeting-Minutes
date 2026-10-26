@@ -173,6 +173,15 @@ a { color: var(--ctl); text-underline-offset: 2px; }
 .pen { background: none; border: 0; padding: 4px; border-radius: 6px; color: var(--muted); opacity: .7; line-height: 0; flex: none; }
 .pen:hover, .pen:focus-visible { opacity: 1; color: var(--fg); }
 .pen svg { width: 15px; height: 15px; }
+.todo-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 10px; }
+.todo-head .seg { margin: 0; }
+.addtask { display: flex; flex-direction: column; gap: 10px; margin: 0 0 12px; padding: 14px 16px; }
+.addrow { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.field { font: inherit; color: var(--fg); background: var(--inset); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; min-width: 0; max-width: 100%; }
+.addtask > .field { width: 100%; }
+.lbl { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); max-width: 100%; }
+.lbl select { max-width: min(60vw, 320px); }
+.item .pen { margin-top: 1px; }
 .rename { font: 500 22px/1.25 var(--font-display); color: var(--fg); background: transparent; border: 1px solid var(--line); border-radius: 8px; padding: 2px 8px; width: min(100%, 640px); }
 .body .rename { font-size: 17px; }
 .dgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
@@ -289,6 +298,8 @@ a { color: var(--ctl); text-underline-offset: 2px; }
   var dueFilter = "week";                       // My to-dos: "today" | "week" | "all"
   try { var savedDue = localStorage.getItem("mm-due"); if (savedDue === "today" || savedDue === "all") dueFilter = savedDue; } catch (e) {}
   var archived = new Set();                     // meeting ids the user archived (hidden, never deleted)
+  var tasks = new Map();                        // the user's own to-dos: id -> {text, due, meeting, label, done, at}
+  var adding = null, addFocus = "";             // the open Add to-do form {text, due, meeting, other}, and its focused field
   var editing = null, editDraft = "";           // meeting id being renamed, and the text typed so far
   var curId = null;                             // the meeting open in the detail (wide) or the card opened last (narrow); null = none
 
@@ -330,24 +341,40 @@ a { color: var(--ctl); text-underline-offset: 2px; }
       (m.my_todos || []).forEach(function (t, i) { var k = "todo-" + i; out.push({ kind: "todo", key: k, m: m, text: t.text, due: t.due, done: !!done[k] }); });
       (m.waiting_on || []).forEach(function (t, i) { var k = "wait-" + i; out.push({ kind: "wait", key: k, m: m, text: t.text, due: t.due, who: t.who, done: !!done[k] }); });
     });
+    // Own to-dos: the meeting is optional; label is the "Other" text, or the meeting's name when it was added.
+    tasks.forEach(function (t, id) { out.push({ kind: "todo", own: id, key: id, m: (t.meeting && meetings.get(t.meeting)) || null, label: t.label || "", text: t.text, due: t.due, done: !!t.done }); });
     return out;
   }
+  function hit(hay) { hay = String(hay).toLowerCase(); return query.toLowerCase().split(/\s+/).every(function (w) { return hay.indexOf(w) !== -1; }); }
+  function itemMatches(i) { return !query || (i.m && matches(i.m)) || (i.own && hit(i.text + " " + i.label)); }
   function matches(m) {
     if (!query) return true;
     var hay = [titleOf(m), m.client, m.project, (m.summary || []).join(" "), (m.decisions || []).join(" "),
       (m.my_todos || []).map(function (t) { return t.text; }).join(" "),
       (m.waiting_on || []).map(function (t) { return t.text + " " + t.who; }).join(" "),
-      (m.deliverables || []).map(function (t) { return t.what; }).join(" ")].join(" ").toLowerCase();
-    return query.toLowerCase().split(/\s+/).every(function (w) { return hay.indexOf(w) !== -1; });
+      (m.deliverables || []).map(function (t) { return t.what; }).join(" ")].join(" ");
+    return hit(hay);
   }
 
   /* ---------- pieces ---------- */
   function itemHtml(it, showWho) {
-    var id = esc(it.m.id);
-    return '<li class="item' + (it.done ? " done" : "") + '"><input type="checkbox" data-tick="' + id + '|' + it.key + '"' + (it.done ? " checked" : "") +
+    var where = it.m ? '<button class="linkbtn" data-goto="' + esc(it.m.id) + '">' + esc(titleOf(it.m)) + "</button>" : esc(it.label);
+    return '<li class="item' + (it.done ? " done" : "") + '"><input type="checkbox" data-tick="' + (it.own ? "own|" + esc(it.own) : esc(it.m.id) + "|" + it.key) + '"' + (it.done ? " checked" : "") +
       (canWrite ? "" : " disabled") + ' aria-label="Tick off">' +
       '<span class="t"><span>' + (showWho && it.who ? "<b>" + esc(it.who) + ":</b> " : "") + esc(it.text) + '</span> ' + (it.done ? "" : dueHtml(it.due)) +
-      '<span class="sm"><button class="linkbtn" data-goto="' + id + '">' + esc(titleOf(it.m)) + "</button></span></span></li>";
+      (where ? '<span class="sm">' + where + "</span>" : "") + "</span>" +
+      (it.own && canWrite ? '<button class="pen" data-deltask="' + esc(it.own) + '" title="Delete" aria-label="Delete to-do">' + BIN + "</button>" : "") + "</li>";
+  }
+  function addFormHtml() {
+    var a = adding, opts = '<option value="">No meeting</option>' +
+      sortedMeetings().filter(function (m) { return !m._failed; }).map(function (m) { return '<option value="' + esc(m.id) + '"' + (a.meeting === m.id ? " selected" : "") + ">" + esc(titleOf(m)) + "</option>"; }).join("") +
+      '<option value="other"' + (a.meeting === "other" ? " selected" : "") + ">Other\u2026</option>";
+    return '<form class="addtask panel" data-addform>' +
+      '<input class="field" data-taskf="text" maxlength="300" placeholder="What do you need to do?" aria-label="To-do" value="' + esc(a.text) + '">' +
+      '<div class="addrow"><label class="lbl">Due <input class="field" type="date" data-taskf="due" value="' + esc(a.due) + '"></label>' +
+      '<label class="lbl">Meeting <select class="field" data-taskf="meeting">' + opts + "</select></label>" +
+      (a.meeting === "other" ? '<input class="field" data-taskf="other" maxlength="60" placeholder="For example Personal" aria-label="Other" value="' + esc(a.other) + '">' : "") + "</div>" +
+      '<div class="btns"><button type="submit" class="btn fill">Add</button><button type="button" class="btn" data-addtask="cancel">Cancel</button></div></form>';
   }
   function inCardItem(m, it, who) {
     return '<li class="item' + (it.done ? " done" : "") + '"><input type="checkbox" data-tick="' + esc(m.id) + '|' + it.key + '"' + (it.done ? " checked" : "") +
@@ -458,6 +485,8 @@ a { color: var(--ctl); text-underline-offset: 2px; }
     // Re-rendering replaces the rename field, so put the typed text and the cursor back.
     var inp = editing && document.getElementById("rename-input");
     if (inp && document.activeElement !== inp) { inp.value = editDraft; inp.focus(); inp.setSelectionRange(editDraft.length, editDraft.length); }
+    var f = adding && addFocus && document.querySelector('[data-taskf="' + addFocus + '"]');
+    if (f && document.activeElement !== f) { f.focus(); if (f.type === "text") f.setSelectionRange(f.value.length, f.value.length); }
     renderAsk();                      // the Ask MM popup is not part of #view/#detail; it follows the open meeting
   }
   var SKELS = '<div class="skel" aria-hidden="true"><i></i><i></i></div>'.repeat(3);
@@ -497,7 +526,7 @@ a { color: var(--ctl); text-underline-offset: 2px; }
     }
     if (!meetings.size) { put('<div class="empty"><b>No meetings yet</b>Click Start in the widget when your next call begins.</div>'); return; }
 
-    var ok = function (i) { return matches(i.m); };
+    var ok = itemMatches;
     if (tab === "meetings" || tab === "archived") {
       var list = sortedMeetings(tab === "archived").filter(matches);
       if (!list.length) { put('<div class="empty">' + (query ? "No meetings match your search." : tab === "archived" ? "Nothing archived." : "<b>No meetings</b>Archived meetings are under Archived.") + "</div>"); return; }
@@ -514,9 +543,9 @@ a { color: var(--ctl); text-underline-offset: 2px; }
       var shown = { today: ["over", "today"], week: ["over", "today", "week", "none"], all: ["over", "today", "week", "later", "none"] }[dueFilter];
       var mine = todos.filter(ok).filter(function (i) { return shown.indexOf(bucket(i.due)) !== -1; })
         .sort(function (a, b) { return String(a.due || "9").localeCompare(String(b.due || "9")); });
-      html = '<div class="seg" role="group" aria-label="Show to-dos">' + [["today", "Due today"], ["week", "This week"], ["all", "All"]].map(function (f) {
+      html = '<div class="todo-head"><div class="seg" role="group" aria-label="Show to-dos">' + [["today", "Due today"], ["week", "This week"], ["all", "All"]].map(function (f) {
         return '<button data-due="' + f[0] + '" aria-pressed="' + (dueFilter === f[0]) + '">' + f[1] + "</button>";
-      }).join("") + "</div>";
+      }).join("") + "</div>" + (canWrite && !adding ? '<button class="btn" data-addtask="open">+ Add to-do</button>' : "") + "</div>" + (adding ? addFormHtml() : "");
       var head = html;
       groups.forEach(function (g) {
         var rows = mine.filter(function (i) { return bucket(i.due) === g[0]; });
@@ -550,6 +579,31 @@ a { color: var(--ctl); text-underline-offset: 2px; }
     writeChain.set(id, p);
   }
 
+  function saveLocalTasks() {
+    try { var o = {}; tasks.forEach(function (v, k) { o[k] = v; }); localStorage.setItem("mm-tasks", JSON.stringify(o)); } catch (e) { toast("Could not save that in this browser.", 6000); }
+  }
+  /* next = null deletes the to-do. */
+  function putTask(id, next) {
+    var prev = tasks.get(id);
+    if (next) tasks.set(id, next); else tasks.delete(id);
+    render();                                                        // instant
+    if (!db) { saveLocalTasks(); return; }
+    var key = "k:" + id, ref = db.doc("tasks/" + id);
+    var p = (writeChain.get(key) || Promise.resolve()).then(function () { return next ? ref.set(next) : ref.delete(); })
+      .catch(function () { if (prev) tasks.set(id, prev); else tasks.delete(id); render(); toast(SAVE_FAIL, 6000); });
+    writeChain.set(key, p);
+  }
+  function addTask() {
+    var a = adding, text = a.text.trim().slice(0, 300);
+    if (!text) { addFocus = "text"; render(); return; }
+    var m = a.meeting && a.meeting !== "other" ? meetings.get(a.meeting) : null;
+    var due = /^\d{4}-\d{2}-\d{2}$/.test(a.due) ? a.due : null;
+    var id = "t" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    adding = null; addFocus = "";
+    putTask(id, { text: text, due: due, meeting: m ? m.id : null, label: m ? titleOf(m) : a.meeting === "other" ? a.other.trim().slice(0, 60) : "", done: false, at: new Date().toISOString() });
+    var shown = { today: ["over", "today"], week: ["over", "today", "week", "none"], all: ["over", "today", "week", "later", "none"] }[dueFilter];
+    toast(shown.indexOf(bucket(due)) === -1 ? "To-do added. Choose All to see it." : "To-do added.");
+  }
   function saveLocalTitles() {
     try { var o = {}; titles.forEach(function (v, k) { o[k] = v; }); localStorage.setItem("mm-titles", JSON.stringify(o)); } catch (e) { toast("Could not save that in this browser.", 6000); }
   }
@@ -1068,6 +1122,10 @@ a { color: var(--ctl); text-underline-offset: 2px; }
 
   document.addEventListener("click", function (ev) {
     if (ev.target.closest("[data-rename]")) return;
+    var at = ev.target.closest("[data-addtask]");
+    if (at) { adding = at.dataset.addtask === "open" ? { text: "", due: "", meeting: "", other: "" } : null; addFocus = adding ? "text" : ""; render(); return; }
+    var dt = ev.target.closest("[data-deltask]");
+    if (dt) { putTask(dt.dataset.deltask, null); toast("To-do deleted."); return; }
     var pen = ev.target.closest("[data-pen]"); if (pen) { startRename(pen.dataset.pen); return; }
     if (ev.target.closest("[data-note-ok]")) { noteSeen = true; try { localStorage.setItem("mm-note-ok", "1"); } catch (e) {} render(); return; }
     if (ev.target.closest("[data-retry]")) { refresh(true); return; }
@@ -1089,14 +1147,27 @@ a { color: var(--ctl); text-underline-offset: 2px; }
     }
   });
   document.addEventListener("change", function (ev) {
+    var tf = adding && ev.target.dataset && ev.target.dataset.taskf;
+    if (tf) { adding[tf] = ev.target.value; if (tf === "meeting") { addFocus = adding.meeting === "other" ? "other" : "meeting"; render(); } return; }
     var cb = ev.target.closest("[data-tick]"); if (!cb) return;
-    var p = cb.dataset.tick.split("|"); tick(p[0], p[1], cb.checked);
+    var p = cb.dataset.tick.split("|");
+    if (p[0] === "own") { var t = tasks.get(p[1]); if (t) putTask(p[1], Object.assign({}, t, { done: cb.checked })); return; }
+    tick(p[0], p[1], cb.checked);
   });
+  document.addEventListener("submit", function (ev) {
+    if (!ev.target.closest("[data-addform]")) return;
+    ev.preventDefault(); if (adding) addTask();
+  });
+  document.addEventListener("focusin", function (ev) { if (adding && ev.target.dataset && ev.target.dataset.taskf) addFocus = ev.target.dataset.taskf; });
   $("search").addEventListener("input", function (e) { query = e.target.value.trim(); render(); });
-  document.addEventListener("input", function (ev) { if (ev.target.dataset && ev.target.dataset.rename) editDraft = ev.target.value; });
+  document.addEventListener("input", function (ev) {
+    if (ev.target.dataset && ev.target.dataset.rename) editDraft = ev.target.value;
+    if (adding && ev.target.dataset && ev.target.dataset.taskf) adding[ev.target.dataset.taskf] = ev.target.value;
+  });
   document.addEventListener("keydown", function (ev) {
     var r = ev.target.classList && ev.target.classList.contains("row") && ev.target.dataset.select;
     if (r && (ev.key === "Enter" || ev.key === " ")) { ev.preventDefault(); selected = r; render(); return; }
+    if (adding && ev.key === "Escape" && ev.target.closest && ev.target.closest("[data-addform]")) { ev.preventDefault(); adding = null; addFocus = ""; render(); return; }
     if (!ev.target.dataset || !ev.target.dataset.rename) return;
     if (ev.key === "Enter") { ev.preventDefault(); finishRename(true); }
     else if (ev.key === "Escape") { ev.preventDefault(); finishRename(false); }
@@ -1165,6 +1236,11 @@ a { color: var(--ctl); text-underline-offset: 2px; }
       archived = new Set(snap.docs.map(function (doc) { return doc.id; }));
       render();
     }, function () {});
+    db.collection("tasks").onSnapshot(function (snap) {
+      tasks = new Map();
+      snap.docs.forEach(function (doc) { var t = doc.data() || {}; if (t.text) tasks.set(doc.id, t); });
+      render();
+    }, function () {});
     db.collection("titles").onSnapshot(function (snap) {
       titles = new Map();
       snap.docs.forEach(function (doc) { var t = (doc.data() || {}).title; if (t) titles.set(doc.id, String(t)); });
@@ -1176,6 +1252,7 @@ a { color: var(--ctl); text-underline-offset: 2px; }
     try { var o = JSON.parse(localStorage.getItem("mm-ticks") || "{}"); Object.keys(o).forEach(function (k) { ticks.set(k, o[k]); }); } catch (e) {}
     try { (JSON.parse(localStorage.getItem("mm-archived") || "[]") || []).forEach(function (k) { archived.add(String(k)); }); } catch (e) {}
     try { var t = JSON.parse(localStorage.getItem("mm-titles") || "{}"); Object.keys(t).forEach(function (k) { titles.set(k, String(t[k])); }); } catch (e) {}
+    try { var o2 = JSON.parse(localStorage.getItem("mm-tasks") || "{}"); Object.keys(o2).forEach(function (k) { if (o2[k] && o2[k].text) tasks.set(k, o2[k]); }); } catch (e) {}
     render();
   }
 })();
